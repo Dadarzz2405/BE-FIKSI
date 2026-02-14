@@ -1,3 +1,3 @@
-from api.routes import homepage, login
+from . import homepage, login
 
 __all__ = ["homepage", "login"]

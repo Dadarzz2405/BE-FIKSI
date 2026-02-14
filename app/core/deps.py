@@ -1,8 +1,9 @@
 from collections.abc import Generator
-from supabase import Client
+from sqlalchemy.orm import Session
 
-from app.db.session import supabase
+from app.db.session import get_db
 
 
-def get_supabase() -> Generator[Client, None, None]:
-    yield supabase
+def get_database() -> Generator[Session, None, None]:
+    """Dependency for getting database sessions."""
+    yield from get_db()

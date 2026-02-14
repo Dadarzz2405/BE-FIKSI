@@ -1,18 +1,24 @@
-from supabase import Client, create_client
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, Session
+from typing import Generator
 
-from app.core.config import SUPABASE_KEY, SUPABASE_URL
+from app.core.config import DATABASE_URL
+
+# Create SQLAlchemy engine
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,  # Verify connections before using them
+    echo=False,  # Set to True for SQL query logging
+)
+
+# Create SessionLocal class
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
-def create_supabase_client() -> Client:
-    if not SUPABASE_URL:
-        raise ValueError(
-            "Missing SUPABASE_URL. Set SUPABASE_URL in your environment."
-        )
-    if not SUPABASE_KEY:
-        raise ValueError(
-            "Missing SUPABASE_KEY (or SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY)."
-        )
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
-
-
-supabase: Client = create_supabase_client()
+def get_db() -> Generator[Session, None, None]:
+    """Dependency for getting database sessions."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

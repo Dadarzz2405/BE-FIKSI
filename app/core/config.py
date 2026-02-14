@@ -1,6 +1,8 @@
 import os
 from urllib.parse import urlparse
 from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_SQLITE_PATH = BASE_DIR / "fiksi.db"

@@ -41,4 +41,5 @@ class Quiz(Base):
 
     # Relationships
     author = relationship("User", back_populates="quizzes")
-    questions = relationship("QuizQuestion", back_populates="quiz", cascade="all, delete-orphan")
+    # Removed QuizQuestion relationship since we're not using quizzes yet
+    # questions = relationship("QuizQuestion", back_populates="quiz", cascade="all, delete-orphan")
