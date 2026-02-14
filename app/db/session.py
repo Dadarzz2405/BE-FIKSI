@@ -1,11 +1,18 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from supabase import Client, create_client
 
-from core.config import DATABASE_URL
+from app.core.config import SUPABASE_KEY, SUPABASE_URL
 
-engine_kwargs = {}
-if DATABASE_URL.startswith("sqlite"):
-    engine_kwargs["connect_args"] = {"check_same_thread": False}
 
-engine = create_engine(DATABASE_URL, **engine_kwargs)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+def create_supabase_client() -> Client:
+    if not SUPABASE_URL:
+        raise ValueError(
+            "Missing SUPABASE_URL. Set SUPABASE_URL in your environment."
+        )
+    if not SUPABASE_KEY:
+        raise ValueError(
+            "Missing SUPABASE_KEY (or SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY)."
+        )
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+supabase: Client = create_supabase_client()

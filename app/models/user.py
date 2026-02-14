@@ -1,46 +1,91 @@
-from sqlalchemy import Column, DateTime, Integer, String, ForeignKey, Boolean
-from sqlalchemy.orm import relationship
-from app.db.base import Base
+"""User model for Supabase database."""
 from datetime import datetime
+import uuid
+
+from sqlalchemy import Boolean, Column, DateTime, String, Text
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+
+from app.db.base import Base
+
+
 class User(Base):
-    id=Column(
-        Integer, 
+    """User account model."""
+    
+    __tablename__ = "users"
+
+    id = Column(
+        UUID(as_uuid=True), 
         primary_key=True, 
+        default=uuid.uuid4, 
         index=True
     )
-    real_name=Column(
-        String, 
+    real_name = Column(
+        String(255),
+        nullable=True, 
         index=True
     )
-    username=Column(
-        String, 
+    username = Column(
+        String(50), 
         unique=True, 
+        nullable=False, 
         index=True
     )
-    email=Column(
-        String, 
+    email = Column(
+        String(255), 
         unique=True, 
+        nullable=False, 
         index=True
     )
-    hashed_password=Column(String)
-    is_active=Column(
+    hashed_password = Column(
+        String(255), 
+        nullable=False
+    )
+    is_active = Column(
         Boolean, 
-        default=False
+        default=False, 
+        nullable=False
     )
-    subscription=Column(
-        String, 
-        default="Free"
+    subscription = Column(
+        String(50), 
+        default="Free", 
+        nullable=False
     )
-    created_at=Column(
-        DateTime, 
-        default=datetime.utcnow
+    bio = Column(
+        Text, 
+        default="", 
+        nullable=False
     )
-    updated_at=Column(
+    avatar_url = Column(
+        String(500), 
+        nullable=True
+    )  
+    created_at = Column(
         DateTime, 
         default=datetime.utcnow, 
-        onupdate=datetime.utcnow
+        nullable=False
     )
-    bio=Column(
-        String(100), 
-        default=""
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    # Relationships
+    posts = relationship(
+        "Post", 
+        back_populates="author", 
+        cascade="all, delete-orphan"
+    )
+    quizzes = relationship(
+        "Quiz", 
+        back_populates="author", 
+        cascade="all, delete-orphan"
+    )
+    admin_profile = relationship(
+        "Admin",
+        back_populates="user",
+        uselist=False,
+        cascade="all, delete-orphan",
     )

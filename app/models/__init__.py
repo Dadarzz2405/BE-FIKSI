@@ -1,12 +1,16 @@
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from dotenv import load_dotenv
-import os
-load_dotenv()
-DATABASE_URL=os.environ.get("DATABASE_URL")
+from app.models.admin import Admin
+from app.models.assets import Asset
+from app.models.friendship import Friendship, FriendshipStatus
+from app.models.post import Post
+from app.models.quiz import Quiz
+from app.models.user import User
 
-engine = create_engine(
-    DATABASE_URL
-)
-
-
+__all__ = [
+    "Admin",
+    "Asset",
+    "Friendship",
+    "FriendshipStatus",
+    "Post",
+    "Quiz",
+    "User",
+]

@@ -1,4 +1,4 @@
-## Database setup
+## Database setup (Supabase)
 
 ### 1. Install dependencies
 
@@ -8,17 +8,18 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Choose database URL
+### 2. Configure Supabase credentials
 
-Default (no env var) uses SQLite file at `app/fiksi.db`.
-
-To use PostgreSQL instead:
+Set your Supabase project URL and API key:
 
 ```bash
-export DATABASE_URL="postgresql+psycopg://USER:PASSWORD@localhost:5432/fiksi_db"
+export SUPABASE_URL="https://<project-ref>.supabase.co"
+export SUPABASE_KEY="<anon-or-service-role-key>"
 ```
 
-### 3. Create tables
+Optional: if `DATABASE_URL` points to Supabase Postgres, `SUPABASE_URL` is auto-derived.
+
+### 3. Initialize DB client
 
 ```bash
 python -m app.db.init_db
@@ -30,4 +31,4 @@ python -m app.db.init_db
 uvicorn app.main:app --reload
 ```
 
-On startup, the app also runs table creation automatically via `init_db()`.
+On startup, the app verifies Supabase client initialization via `init_db()`.

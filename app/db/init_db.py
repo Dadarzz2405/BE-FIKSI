@@ -1,10 +1,11 @@
-from db.base import Base
-from db.session import engine
+from app.db.session import supabase
 
 def init_db() -> None:
-    Base.metadata.create_all(bind=engine)
+    # Supabase manages schema externally (SQL editor, migrations, or CLI).
+    # This call only verifies that the client is configured.
+    _ = supabase
 
 
 if __name__ == "__main__":
     init_db()
-    print("Database initialized.")
+    print("Supabase client initialized.")
