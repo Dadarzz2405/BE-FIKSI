@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Query, Depends
 from pydantic import BaseModel
 from typing import List, Optional
-from supabase import Client  # Make sure supabase-py is installed
+from supabase import Client  
 from app.db.session import supabase
 router = APIRouter()
 
@@ -54,7 +54,7 @@ def _fetch_published_posts(
 def _build_homepage_payload() -> HomepageResponse:
     return HomepageResponse(
         title="Dadarzz FIKSI",
-        description="Build, publish, and manage quizzes in one place.",
+        description="Prototype.",
         status="ok",
         stats=HomepageStats(
             total_quizzes=0,
