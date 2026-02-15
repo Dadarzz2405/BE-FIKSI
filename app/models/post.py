@@ -28,7 +28,7 @@ class Post(Base):
         Text, 
         nullable=False
     )
-    image = Column(
+    image_url = Column(
         String(500), 
         nullable=True
     )

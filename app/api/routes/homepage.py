@@ -16,6 +16,7 @@ class HomepagePostResponse(BaseModel):
     description: Optional[str] = None
     created_at: str
     author: Optional[str] = None
+    image_url: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -62,6 +63,7 @@ def _fetch_published_posts(
                 description=post.excerpt,
                 created_at=post.created_at.isoformat(),
                 author=str(post.author_id) if post.author_id else None,
+                image_url=post.image_url,
             )
             for post in posts
         ]
