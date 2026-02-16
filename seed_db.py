@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.db.session import SessionLocal, engine
 from app.models.user import User
 from app.models.post import Post
-from app.core.config import SUPABASE_URL, SUPABASE_KEY
+from app.core.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 
 # Import Supabase client for storage
 from supabase import create_client
@@ -33,15 +33,16 @@ def upload_image_to_supabase(image_path: str, bucket_name: str = "post-images") 
     """
     print(f"\n📤 Uploading image to Supabase Storage...")
     
-    if not SUPABASE_URL or not SUPABASE_KEY:
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         print("⚠️  Supabase credentials not found!")
-        print("Set SUPABASE_URL and SUPABASE_KEY in your environment variables.")
+        print("Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in your environment variables.")
         print("Using placeholder URL instead...")
         return "https://i.ibb.co.com/Kx9bs0zv/Garuda-Icon-Featuring-Networked-Wings-and-Typography-2.png"
     
     try:
-        # Create Supabase client
-        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        # Create Supabase client with SERVICE ROLE KEY for admin operations
+        print("🔑 Using service role key for admin access...")
+        supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
         
         # Check if image file exists
         if not os.path.exists(image_path):
@@ -204,7 +205,7 @@ This post also includes the Garuda logo image to show how media is integrated in
         
         post = Post(
             **post_data,
-            image=image_url,  # All posts use the Garuda image
+            image_url=image_url,  # ✅ FIXED: Now using correct field name
             author_id=author.id,
             created_at=created_at,
             updated_at=created_at

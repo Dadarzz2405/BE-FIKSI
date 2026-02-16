@@ -1,3 +1,3 @@
-from . import homepage, login
+from . import homepage, auth, profile
 
-__all__ = ["homepage", "login"]
+__all__ = ["homepage", "auth", "profile"]

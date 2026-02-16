@@ -28,8 +28,17 @@ def _derive_supabase_url_from_database_url(database_url: str | None) -> str | No
 
 
 SUPABASE_URL = os.getenv("SUPABASE_URL") or _derive_supabase_url_from_database_url(DATABASE_URL)
+
+# Use anon key for general operations (default for API)
 SUPABASE_KEY = (
     os.getenv("SUPABASE_KEY")
     or os.getenv("SUPABASE_ANON_KEY")
     or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+)
+
+# Service role key for admin operations (seeding, migrations, bucket creation, etc.)
+# This bypasses Row Level Security and has full access
+SUPABASE_SERVICE_ROLE_KEY = (
+    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    or os.getenv("SUPABASE_KEY")
 )
