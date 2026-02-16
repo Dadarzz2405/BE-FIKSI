@@ -1,14 +1,17 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 from typing import Generator
-
+from sqlalchemy.pool import NullPool
 from app.core.config import DATABASE_URL
 
 # Create SQLAlchemy engine
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,  # Verify connections before using them
-    echo=False,  # Set to True for SQL query logging
+    pool_pre_ping=True,      # Already have this ✓
+    pool_recycle=3600,       # ✅ Recycle connections after 1 hour
+    pool_size=5,             # ✅ Max connections in pool
+    max_overflow=10,         # ✅ Max overflow connections
+    echo=False,
 )
 
 # Create SessionLocal class
