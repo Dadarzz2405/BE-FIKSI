@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-
+from app.db.session import engine  
 from app.api.routes import homepage, auth, profile
 from app.db.init_db import init_db
 
@@ -12,6 +12,11 @@ app = FastAPI(
     version="1.0.0"
 )
 
+
+@app.on_event("shutdown")
+def on_shutdown() -> None:
+    print("👋 Shutting down Nusa CoNEX API...")
+    engine.dispose()  # Clean up all connections
 # CORS Middleware - allows frontend to communicate with backend
 app.add_middleware(
     CORSMiddleware,

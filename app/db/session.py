@@ -1,16 +1,17 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
-from typing import Generator
 from sqlalchemy.pool import NullPool
+from typing import Generator
+
 from app.core.config import DATABASE_URL
 
-# Create SQLAlchemy engine
+# Create SQLAlchemy engine with NullPool to avoid prepared statement issues
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,      # Already have this ✓
-    pool_recycle=3600,       # ✅ Recycle connections after 1 hour
-    pool_size=5,             # ✅ Max connections in pool
-    max_overflow=10,         # ✅ Max overflow connections
+    poolclass=NullPool,  # No connection pooling - fresh connections every time
+    connect_args={
+        "prepared_statement_cache_size": 0  # Disable prepared statement cache
+    } if "postgresql" in DATABASE_URL else {},
     echo=False,
 )
 
