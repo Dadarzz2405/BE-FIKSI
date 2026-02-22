@@ -71,8 +71,8 @@ def _make_unique_username(base: str, db: Session) -> str:
 
 def _get_or_create_supabase_user(auth_user: Any, db: Session) -> User:
     """
-    Find existing user by Supabase Auth id or email, or create one on first login
-    (e.g. after Supabase native Google OAuth).
+    Find existing user by Supabase Auth id or email, or create one on first login.
+    Always ensures the user is active after successful OAuth authentication.
     """
     auth_id = str(auth_user.id)
     email: str = getattr(auth_user, "email", "") or ""
@@ -86,12 +86,34 @@ def _get_or_create_supabase_user(auth_user: Any, db: Session) -> User:
 
     user = db.query(User).filter(User.id == auth_user.id).first()
     if user:
+        # Activate and update avatar if needed
+        changed = False
+        if not user.is_active:
+            user.is_active = True
+            changed = True
+        if avatar_url and not user.avatar_url:
+            user.avatar_url = avatar_url
+            changed = True
+        if changed:
+            db.commit()
+            db.refresh(user)
         return user
 
     if email:
         user = db.query(User).filter(User.email == email).first()
         if user:
-            return user  # Same email, e.g. existing email signup or linked identity
+            # Same email — link the OAuth identity and activate
+            changed = False
+            if not user.is_active:
+                user.is_active = True
+                changed = True
+            if avatar_url and not user.avatar_url:
+                user.avatar_url = avatar_url
+                changed = True
+            if changed:
+                db.commit()
+                db.refresh(user)
+            return user
 
     # First-time OAuth login — auto-create DB row
     base = (real_name or "").replace(" ", "_") or (email.split("@")[0] if email else "user")
@@ -109,10 +131,21 @@ def _get_or_create_supabase_user(auth_user: Any, db: Session) -> User:
         subscription="Free",
     )
     db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    return new_user
-
+    try:
+        db.commit()
+        db.refresh(new_user)
+        return new_user
+    except Exception:
+        # Race condition: another concurrent request already inserted this user
+        db.rollback()
+        existing = db.query(User).filter(User.id == auth_user.id).first()
+        if existing:
+            if not existing.is_active:
+                existing.is_active = True
+                db.commit()
+                db.refresh(existing)
+            return existing
+        raise
 
 # ============================================================================
 # ENDPOINTS
@@ -175,6 +208,9 @@ def login(credentials: LoginRequest, db: Session = Depends(get_db)):
 @router.post("/signup", response_model=SignupResponse)
 def signup(signup_data: SignupRequest, db: Session = Depends(get_db)):
     try:
+        # Strip leading @ from username if user typed it (e.g. "@Dadarzz" → "Dadarzz")
+        signup_data.username = signup_data.username.lstrip("@")
+
         existing = db.query(User).filter(
             (User.email == signup_data.email) | (User.username == signup_data.username)
         ).first()
@@ -231,13 +267,6 @@ def signup(signup_data: SignupRequest, db: Session = Depends(get_db)):
 
 @router.get("/google/url")
 def get_google_oauth_url(redirect_to: Optional[str] = None):
-    """
-    Return the Supabase native Google OAuth URL. Frontend should redirect the
-    user to this URL. After sign-in, Supabase redirects to your frontend
-    (redirect_to or FRONTEND_URL/auth/callback) with the session in the URL;
-    the frontend Supabase client can then get the access_token and send it
-    as Bearer token to the API.
-    """
     redirect_url = (redirect_to or f"{FRONTEND_URL.rstrip('/')}/auth/callback").strip()
     url = supabase_auth.get_oauth_sign_in_url(provider="google", redirect_to=redirect_url)
     return {"url": url}
@@ -255,8 +284,7 @@ def logout():
 @router.get("/me", response_model=UserResponse)
 def get_current_user(authorization: str = Header(...), db: Session = Depends(get_db)):
     """
-    Validate Supabase access token (email/password or native Google OAuth).
-    Creates a local User row on first login for OAuth users.
+    Validate Supabase access token. Activates user if they authenticated via OAuth.
     """
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Invalid authorization header.")
@@ -271,14 +299,9 @@ def get_current_user(authorization: str = Header(...), db: Session = Depends(get
             raise HTTPException(status_code=401, detail="Invalid or expired token")
 
         auth_user = auth_user_resp.user
-        user = db.query(User).filter(User.id == auth_user.id).first()
-        if not user:
-            user = db.query(User).filter(User.email == auth_user.email).first() if getattr(auth_user, "email", None) else None
-        if not user:
-            user = _get_or_create_supabase_user(auth_user, db)
 
-        if not user.is_active:
-            raise HTTPException(status_code=403, detail="Account is not active.")
+        # _get_or_create_supabase_user handles activation for OAuth users
+        user = _get_or_create_supabase_user(auth_user, db)
 
         return UserResponse(
             id=str(user.id), email=user.email, username=user.username,

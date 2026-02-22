@@ -25,11 +25,16 @@ class ShowProfile(BaseModel):
 
 @router.get("/{username}", response_model=ShowProfile)
 def get_profile(username: str, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.username == username).first()
-    
+    # Strip leading @ if present
+    clean_username = username.lstrip("@")
+    user = db.query(User).filter(User.username == clean_username).first()
+    # Also try with @ in case it was stored that way
+    if not user:
+        user = db.query(User).filter(User.username == username).first()
+
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
+
     return ShowProfile(
         id=str(user.id),
         real_name=user.real_name,
@@ -45,10 +50,10 @@ def get_profile(username: str, db: Session = Depends(get_db)):
 def get_profile_by_id(user_id: str, db: Session = Depends(get_db)):
     """Get user profile by user ID."""
     user = db.query(User).filter(User.id == user_id).first()
-    
+
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
+
     return ShowProfile(
         id=str(user.id),
         real_name=user.real_name,
