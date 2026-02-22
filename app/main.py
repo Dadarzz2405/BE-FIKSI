@@ -3,13 +3,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 from app.db.session import engine
-from app.api.routes import homepage, auth, profile, posts
+from app.api.routes import homepage, auth, profile
+from app.api.routes import posts, categories, comments
 from app.db.init_db import init_db
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup and shutdown lifecycle."""
     print("🚀 Starting Nusa CoNEX API...")
     init_db()
     print("✅ Database initialized successfully")
@@ -18,93 +18,46 @@ async def lifespan(app: FastAPI):
     engine.dispose()
 
 
-# Create FastAPI app
 app = FastAPI(
     title="Nusa CoNEX API",
-    description="Backend API for Nusa CoNEX platform with authentication",
+    description="Backend API for Nusa CoNEX platform",
     version="1.0.0",
     lifespan=lifespan,
 )
 
-# CORS Middleware - allows frontend to communicate with backend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:8080",  # Next.js dev server
-        "http://localhost:3000",  # Alternative port
+        "http://localhost:8080",
+        "http://localhost:3000",
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ============================================================================
-# ROUTE REGISTRATION
-# ============================================================================
+# Routes
+app.include_router(homepage.router, prefix="/homepage", tags=["Homepage"])
+app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
+app.include_router(profile.router, prefix="/profile", tags=["Profile"])
+app.include_router(posts.router, prefix="/posts", tags=["Posts"])
+app.include_router(categories.router, prefix="/categories", tags=["Categories"])
+app.include_router(comments.router, tags=["Comments"])  # paths defined inside router
 
-# Homepage routes (public)
-app.include_router(
-    homepage.router,
-    prefix="/homepage",
-    tags=["Homepage"]
-)
-
-# Authentication routes (public)
-app.include_router(
-    auth.router,
-    prefix="/auth",
-    tags=["Authentication"]
-)
-
-# Profile routes (public/protected)
-app.include_router(
-    profile.router,
-    prefix="/profile",
-    tags=["Profile"]
-)
-
-app.include_router(
-    posts.router,
-    prefix="/posts",
-    tags=["Posts"]
-)
-
-# ============================================================================
-# ROOT ENDPOINTS
-# ============================================================================
 
 @app.get("/")
 def root():
-    """Root endpoint - API information."""
     return {
         "message": "Welcome to Nusa CoNEX API",
         "version": "1.0.0",
         "docs": "/docs",
-        "endpoints": {
-            "homepage": "/homepage",
-            "auth": "/auth",
-            "profile": "/profile"
-        }
     }
 
 
 @app.get("/health")
 def health_check():
-    """Health check endpoint."""
-    return {
-        "status": "healthy",
-        "service": "Nusa CoNEX API"
-    }
+    return {"status": "healthy", "service": "Nusa CoNEX API"}
 
-
-# ============================================================================
-# RUN APPLICATION
-# ============================================================================
 
 if __name__ == "__main__":
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True  # Enable hot reload for development
-    )
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
