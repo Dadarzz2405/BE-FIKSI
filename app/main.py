@@ -1,22 +1,31 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-from app.db.session import engine  
-from app.api.routes import homepage, auth, profile
+from app.db.session import engine
+from app.api.routes import homepage, auth, profile, posts
 from app.db.init_db import init_db
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup and shutdown lifecycle."""
+    print("🚀 Starting Nusa CoNEX API...")
+    init_db()
+    print("✅ Database initialized successfully")
+    yield
+    print("👋 Shutting down Nusa CoNEX API...")
+    engine.dispose()
+
 
 # Create FastAPI app
 app = FastAPI(
     title="Nusa CoNEX API",
     description="Backend API for Nusa CoNEX platform with authentication",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
-
-@app.on_event("shutdown")
-def on_shutdown() -> None:
-    print("👋 Shutting down Nusa CoNEX API...")
-    engine.dispose()  # Clean up all connections
 # CORS Middleware - allows frontend to communicate with backend
 app.add_middleware(
     CORSMiddleware,
@@ -54,24 +63,11 @@ app.include_router(
     tags=["Profile"]
 )
 
-
-# ============================================================================
-# LIFECYCLE EVENTS
-# ============================================================================
-
-@app.on_event("startup")
-def on_startup() -> None:
-    """Initialize database on application startup."""
-    print("🚀 Starting Nusa CoNEX API...")
-    init_db()
-    print("✅ Database initialized successfully")
-
-
-@app.on_event("shutdown")
-def on_shutdown() -> None:
-    """Cleanup on application shutdown."""
-    print("👋 Shutting down Nusa CoNEX API...")
-
+app.include_router(
+    posts.router,
+    prefix="/posts",
+    tags=["Posts"]
+)
 
 # ============================================================================
 # ROOT ENDPOINTS

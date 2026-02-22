@@ -25,18 +25,21 @@ class SupabaseAuthService:
     
     def sign_up(self, email: str, password: str, redirect_url: Optional[str] = None):
         """Register a new user with Supabase Auth."""
-        options = {"emailRedirectTo": redirect_url} if redirect_url else {}
-        return self.client.auth.sign_up(
-            email=email,
-            password=password,
-            options=options
-        )
+        credentials = {
+            "email": email,
+            "password": password,
+        }
+        if redirect_url:
+            credentials["options"] = {"emailRedirectTo": redirect_url}
+        return self.client.auth.sign_up(credentials)
     
     def sign_in(self, email: str, password: str):
         """Sign in an existing user."""
         return self.client.auth.sign_in_with_password(
-            email=email,
-            password=password
+            {
+                "email": email,
+                "password": password,
+            }
         )
     
     def sign_out(self):

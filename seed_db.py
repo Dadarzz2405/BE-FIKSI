@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
+from typing import Optional
 
 from app.db.session import SessionLocal, engine
 from app.models.user import User
@@ -18,6 +19,33 @@ from app.core.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 
 # Import Supabase client for storage
 from supabase import create_client
+
+
+def _provision_supabase_auth_user(
+    supabase_client,
+    email: str,
+    password: str
+) -> tuple[Optional[str], bool]:
+    """
+    Create/update a Supabase Auth user for seeded credentials.
+
+    Returns:
+        (auth_user_id, is_login_ready)
+    """
+    try:
+        response = supabase_client.auth.admin.create_user(
+            {
+                "email": email,
+                "password": password,
+                "email_confirm": True,
+            }
+        )
+        auth_user = getattr(response, "user", None)
+        if auth_user and getattr(auth_user, "id", None):
+            return str(auth_user.id), True
+    except Exception as e:
+        print(f"⚠️  Could not create Supabase Auth user for {email}: {e}")
+    return None, False
 
 
 def upload_image_to_supabase(image_path: str, bucket_name: str = "post-images") -> str:
@@ -101,7 +129,7 @@ def upload_image_to_supabase(image_path: str, bucket_name: str = "post-images") 
         return "https://i.ibb.co.com/Kx9bs0zv/Garuda-Icon-Featuring-Networked-Wings-and-Typography-2.png"
 
 
-def create_mock_users(db: Session) -> list[User]:
+def create_mock_users(db: Session) -> tuple[list[User], int]:
     """Create mock users."""
     print("\n👥 Creating mock users...")
     
@@ -109,6 +137,7 @@ def create_mock_users(db: Session) -> list[User]:
         {
             "username": "admin_nusa",
             "email": "admin@nusaconex.com",
+            "plain_password": "password123",
             "real_name": "Admin Nusa CoNEX",
             "hashed_password": "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYzNb8Ow1u2",  # "password123"
             "is_active": True,
@@ -119,6 +148,7 @@ def create_mock_users(db: Session) -> list[User]:
         {
             "username": "test_user1",
             "email": "user1@example.com",
+            "plain_password": "password123",
             "real_name": "Test User One",
             "hashed_password": "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYzNb8Ow1u2",
             "is_active": True,
@@ -129,6 +159,7 @@ def create_mock_users(db: Session) -> list[User]:
         {
             "username": "test_user2",
             "email": "user2@example.com",
+            "plain_password": "password123",
             "real_name": "Test User Two",
             "hashed_password": "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYzNb8Ow1u2",
             "is_active": True,
@@ -139,8 +170,33 @@ def create_mock_users(db: Session) -> list[User]:
     ]
     
     users = []
+    login_ready_count = 0
+    supabase_admin = None
+
+    if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
+        try:
+            supabase_admin = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+            print("🔑 Supabase Auth sync enabled for seeded users")
+        except Exception as e:
+            print(f"⚠️  Supabase Auth sync disabled: {e}")
+
     for user_data in users_data:
-        user = User(**user_data)
+        user_payload = dict(user_data)
+        seed_password = user_payload.pop("plain_password")
+
+        if supabase_admin:
+            auth_user_id, is_login_ready = _provision_supabase_auth_user(
+                supabase_admin,
+                email=user_payload["email"],
+                password=seed_password,
+            )
+            if auth_user_id:
+                user_payload["id"] = auth_user_id
+                user_payload["hashed_password"] = ""
+            if is_login_ready:
+                login_ready_count += 1
+
+        user = User(**user_payload)
         db.add(user)
         users.append(user)
     
@@ -149,7 +205,11 @@ def create_mock_users(db: Session) -> list[User]:
         db.refresh(user)
     
     print(f"✓ Created {len(users)} users")
-    return users
+    if supabase_admin:
+        print(f"✓ {login_ready_count}/{len(users)} users are ready for /auth/login")
+    else:
+        print("⚠️  Seeded users were created in DB only (not Supabase Auth login-ready).")
+    return users, login_ready_count
 
 
 def create_test_posts(db: Session, users: list[User], image_url: str) -> list[Post]:
@@ -238,7 +298,7 @@ def seed_database(image_path: str = "garuda_icon.png"):
         image_url = upload_image_to_supabase(image_path)
         
         # Step 2: Create users
-        users = create_mock_users(db)
+        users, login_ready_count = create_mock_users(db)
         
         # Step 3: Create posts
         posts = create_test_posts(db, users, image_url)
@@ -257,6 +317,9 @@ def seed_database(image_path: str = "garuda_icon.png"):
         print(f"\n🔑 Test Credentials:")
         print(f"  Email: admin@nusaconex.com")
         print(f"  Password: password123")
+        if login_ready_count < len(users):
+            print("  ⚠️  Some seeded users are not login-ready via Supabase Auth.")
+            print("     Set SUPABASE_SERVICE_ROLE_KEY to auto-provision auth users.")
         print(f"\n🚀 Next Steps:")
         print(f"  1. Run: uvicorn app.main:app --reload")
         print(f"  2. Visit: http://localhost:8000/docs")

@@ -42,3 +42,6 @@ SUPABASE_SERVICE_ROLE_KEY = (
     os.getenv("SUPABASE_SERVICE_ROLE_KEY")
     or os.getenv("SUPABASE_KEY")
 )
+
+# Where to send users after they click the email confirmation link (must be in Supabase Redirect URLs allowlist)
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
