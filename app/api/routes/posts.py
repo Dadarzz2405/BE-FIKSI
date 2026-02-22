@@ -23,6 +23,7 @@ class PostCreate(BaseModel):
     excerpt: Optional[str] = None
     image_url: Optional[str] = None
     is_published: bool = True
+    category_id: Optional[str] = None
 
 
 class PostUpdate(BaseModel):
@@ -31,12 +32,20 @@ class PostUpdate(BaseModel):
     excerpt: Optional[str] = None
     image_url: Optional[str] = None
     is_published: Optional[bool] = None
+    category_id: Optional[str] = None
 
 
 class AuthorInfo(BaseModel):
     username: str
     real_name: Optional[str]
     avatar_url: Optional[str]
+
+
+class CategoryInfo(BaseModel):
+    id: str
+    name: str
+    slug: str
+    icon: Optional[str]
 
 
 class PostResponse(BaseModel):
@@ -50,6 +59,8 @@ class PostResponse(BaseModel):
     updated_at: str
     author_id: str
     author: Optional[AuthorInfo] = None
+    category_id: Optional[str] = None
+    category: Optional[CategoryInfo] = None
 
     class Config:
         from_attributes = True
@@ -70,7 +81,6 @@ def get_current_user(
     authorization: str = Header(...),
     db: Session = Depends(get_db)
 ) -> User:
-    """Dependency: validate Bearer token and return current user."""
     if not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Invalid authorization format")
 
@@ -102,6 +112,16 @@ def _post_to_response(post: Post) -> PostResponse:
             real_name=post.author.real_name,
             avatar_url=post.author.avatar_url,
         )
+
+    category_info = None
+    if post.category:
+        category_info = CategoryInfo(
+            id=str(post.category.id),
+            name=post.category.name,
+            slug=post.category.slug,
+            icon=post.category.icon,
+        )
+
     return PostResponse(
         id=str(post.id),
         title=post.title,
@@ -113,6 +133,8 @@ def _post_to_response(post: Post) -> PostResponse:
         updated_at=post.updated_at.isoformat(),
         author_id=str(post.author_id),
         author=author_info,
+        category_id=str(post.category_id) if post.category_id else None,
+        category=category_info,
     )
 
 
@@ -124,11 +146,14 @@ def _post_to_response(post: Post) -> PostResponse:
 def list_posts(
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=10, ge=1, le=50),
+    category_id: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
 ):
-    """List all published posts, paginated."""
+    """List all published posts, paginated. Optionally filter by category_id."""
     offset = (page - 1) * limit
     query = db.query(Post).filter(Post.is_published == True)
+    if category_id:
+        query = query.filter(Post.category_id == category_id)
     total = query.count()
     posts = (
         query.order_by(desc(Post.created_at))
@@ -185,6 +210,7 @@ def create_post(
     db: Session = Depends(get_db),
 ):
     """Create a new post. Requires authentication."""
+    import uuid as _uuid
     post = Post(
         title=body.title,
         content=body.content,
@@ -192,6 +218,7 @@ def create_post(
         image_url=body.image_url,
         is_published=body.is_published,
         author_id=current_user.id,
+        category_id=_uuid.UUID(body.category_id) if body.category_id else None,
     )
     db.add(post)
     db.commit()
@@ -207,6 +234,7 @@ def update_post(
     db: Session = Depends(get_db),
 ):
     """Update a post. Only the author can edit."""
+    import uuid as _uuid
     post = db.query(Post).filter(Post.id == post_id).first()
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
@@ -225,6 +253,8 @@ def update_post(
         post.image_url = body.image_url
     if body.is_published is not None:
         post.is_published = body.is_published
+    if body.category_id is not None:
+        post.category_id = _uuid.UUID(body.category_id) if body.category_id else None
 
     post.updated_at = datetime.utcnow()
     db.commit()

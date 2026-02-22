@@ -29,7 +29,7 @@ class User(Base):
         nullable=False,
     )
 
-    # Relationships
+    # Relationships — back_populates must exactly match the attribute name on the other model
     posts = relationship("Post", back_populates="author", cascade="all, delete-orphan")
     quizzes = relationship("Quiz", back_populates="author", cascade="all, delete-orphan")
     comments = relationship("Comment", back_populates="author", cascade="all, delete-orphan")
