@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional
@@ -8,8 +8,8 @@ import mimetypes
 
 from app.db.session import get_db
 from app.models.user import User
-from app.core.auth_service import supabase_auth
 from app.core.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+from app.api.dependencies import get_current_active_user
 
 router = APIRouter()
 
@@ -37,24 +37,6 @@ class UpdateProfileBody(BaseModel):
     avatar_url: Optional[str] = None
 
 
-def _get_current_user(authorization: str = Header(...), db: Session = Depends(get_db)) -> User:
-    if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Invalid authorization format")
-    token = authorization[7:]
-    try:
-        resp = supabase_auth.get_user(token)
-        if not resp.user:
-            raise HTTPException(status_code=401, detail="Invalid token")
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=401, detail="Auth failed")
-    user = db.query(User).filter(User.id == resp.user.id).first()
-    if not user or not user.is_active:
-        raise HTTPException(status_code=403, detail="Unauthorized")
-    return user
-
-
 def _to_response(user: User) -> ShowProfile:
     return ShowProfile(
         id=str(user.id),
@@ -70,14 +52,16 @@ def _to_response(user: User) -> ShowProfile:
 @router.patch("/me", response_model=ShowProfile)
 def update_my_profile(
     body: UpdateProfileBody,
-    current_user: User = Depends(_get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
     if body.username is not None:
         clean = body.username.strip()
         if not clean or len(clean) > 50:
             raise HTTPException(status_code=400, detail="Username must be 1–50 characters")
-        existing = db.query(User).filter(User.username == clean, User.id != current_user.id).first()
+        existing = db.query(User).filter(
+            User.username == clean, User.id != current_user.id
+        ).first()
         if existing:
             raise HTTPException(status_code=400, detail="Username already taken")
         current_user.username = clean
@@ -96,7 +80,7 @@ def update_my_profile(
 @router.post("/me/avatar", response_model=ShowProfile)
 async def upload_profile_photo(
     file: UploadFile = File(...),
-    current_user: User = Depends(_get_current_user),
+    current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
     """Upload a profile photo; updates the current user's avatar_url."""
