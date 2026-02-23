@@ -5,6 +5,7 @@ import uvicorn
 from app.db.session import engine
 from app.api.routes import homepage, auth, profile
 from app.api.routes import posts, categories, comments
+from app.api.routes import upload          # ← new
 from app.db.init_db import init_db
 
 
@@ -37,12 +38,13 @@ app.add_middleware(
 )
 
 # Routes
-app.include_router(homepage.router, prefix="/homepage", tags=["Homepage"])
-app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
-app.include_router(profile.router, prefix="/profile", tags=["Profile"])
-app.include_router(posts.router, prefix="/posts", tags=["Posts"])
-app.include_router(categories.router, prefix="/categories", tags=["Categories"])
-app.include_router(comments.router, tags=["Comments"])  # paths defined inside router
+app.include_router(homepage.router,    prefix="/homepage",    tags=["Homepage"])
+app.include_router(auth.router,        prefix="/auth",        tags=["Authentication"])
+app.include_router(profile.router,     prefix="/profile",     tags=["Profile"])
+app.include_router(posts.router,       prefix="/posts",       tags=["Posts"])
+app.include_router(categories.router,  prefix="/categories",  tags=["Categories"])
+app.include_router(comments.router,    tags=["Comments"])
+app.include_router(upload.router,      prefix="/upload",      tags=["Upload"])   # ← new
 
 
 @app.get("/")
