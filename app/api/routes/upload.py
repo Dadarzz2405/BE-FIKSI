@@ -1,17 +1,15 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
-from sqlalchemy.orm import Session
+# app/api/routes/upload.py
 import uuid
 import mimetypes
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
 
-from app.db.session import get_db
 from app.models.user import User
-from app.core.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 from app.api.dependencies import get_current_active_user
+from app.core.storage_service import (
+    upload_file, ALLOWED_IMAGE_TYPES, MAX_FILE_SIZE, EXTENSION_MAP, VALID_BUCKETS
+)
 
 router = APIRouter()
-
-ALLOWED_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
-MAX_SIZE = 5 * 1024 * 1024  # 5 MB
 
 
 @router.post("/image")
@@ -20,40 +18,25 @@ async def upload_image(
     bucket: str = Query(default="post-images"),
     current_user: User = Depends(get_current_active_user),
 ):
-    """Upload an image to Supabase Storage and return its public URL."""
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-        raise HTTPException(status_code=500, detail="Storage not configured on server")
+    if bucket not in VALID_BUCKETS:
+        raise HTTPException(status_code=400, detail=f"Invalid bucket. Choose from: {VALID_BUCKETS}")
 
     content_type = file.content_type or "image/jpeg"
-    if content_type not in ALLOWED_TYPES:
+    if content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(status_code=400, detail="Only JPEG, PNG, GIF, or WebP images are allowed")
 
     data = await file.read()
-    if len(data) > MAX_SIZE:
-        raise HTTPException(status_code=400, detail="File too large — maximum size is 5 MB")
+    if len(data) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File too large — maximum 5 MB")
 
-    ext = mimetypes.guess_extension(content_type) or ".jpg"
-    if ext == ".jpe":
-        ext = ".jpg"
+    ext = EXTENSION_MAP.get(content_type, ".jpg")
     filename = f"{uuid.uuid4()}{ext}"
 
-    from supabase import create_client
-    client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-
     try:
-        try:
-            existing = client.storage.list_buckets()
-            if not any(b["name"] == bucket for b in existing):
-                client.storage.create_bucket(bucket, options={"public": True})
-        except Exception:
-            pass
+        url = upload_file(bucket, filename, data, content_type)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        client.storage.from_(bucket).upload(
-            filename,
-            data,
-            file_options={"content-type": content_type},
-        )
-        url = client.storage.from_(bucket).get_public_url(filename)
-        return {"url": url, "filename": filename}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Upload failed: {exc}")
+    return {"url": url, "filename": filename}

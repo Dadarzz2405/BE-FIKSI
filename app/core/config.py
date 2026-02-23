@@ -1,47 +1,30 @@
+# app/core/config.py
 import os
-from urllib.parse import urlparse
 from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DEFAULT_SQLITE_PATH = BASE_DIR / "fiksi.db"
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'fiksi.db'}")
 
-# Override in env for Postgres/MySQL, e.g.:
-# postgresql+psycopg://user:password@localhost:5432/fiksi_db
-DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DEFAULT_SQLITE_PATH}")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 
+# Anon key: public key for auth flows and RLS-respecting operations
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
 
-def _derive_supabase_url_from_database_url(database_url: str | None) -> str | None:
-    if not database_url:
-        return None
+# Service role key: bypasses RLS, ONLY for server-side admin/storage operations
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
 
-    parsed = urlparse(database_url)
-    host = parsed.hostname
-    if not host or not host.endswith(".supabase.co"):
-        return None
+# Legacy alias — kept so existing code that imports SUPABASE_KEY still works
+# Points to anon key intentionally; service role is accessed explicitly
+SUPABASE_KEY = SUPABASE_ANON_KEY
 
-    # Supabase Postgres host is usually db.<project-ref>.supabase.co.
-    if host.startswith("db."):
-        host = host[3:]
-    return f"https://{host}"
-
-
-SUPABASE_URL = os.getenv("SUPABASE_URL") or _derive_supabase_url_from_database_url(DATABASE_URL)
-
-# Use anon key for general operations (default for API)
-SUPABASE_KEY = (
-    os.getenv("SUPABASE_KEY")
-    or os.getenv("SUPABASE_ANON_KEY")
-    or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-)
-
-# Service role key for admin operations (seeding, migrations, bucket creation, etc.)
-# This bypasses Row Level Security and has full access
-SUPABASE_SERVICE_ROLE_KEY = (
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    or os.getenv("SUPABASE_KEY")
-)
-
-# Where to send users after they click the email confirmation link (must be in Supabase Redirect URLs allowlist)
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
+# Fail fast at startup rather than getting cryptic errors later
+if not SUPABASE_URL:
+    raise RuntimeError("SUPABASE_URL environment variable is not set")
+if not SUPABASE_ANON_KEY:
+    raise RuntimeError("SUPABASE_ANON_KEY environment variable is not set")
+if not SUPABASE_SERVICE_ROLE_KEY:
+    raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY environment variable is not set")
