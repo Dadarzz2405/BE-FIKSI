@@ -169,7 +169,9 @@ def list_posts(
     )
 
 
+# ✅ FIX: register both /my and /my/ so either URL works
 @router.get("/my", response_model=PostListResponse)
+@router.get("/my/", response_model=PostListResponse, include_in_schema=False)
 def list_my_posts(
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=10, ge=1, le=50),
