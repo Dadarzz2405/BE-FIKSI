@@ -1,14 +1,31 @@
 import uuid
-from sqlalchemy import Column, ForeignKey, String, Text, Boolean, DateTime, UniqueConstraint
+from datetime import datetime
+
+from sqlalchemy import Column, DateTime, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-from datetime import datetime
+
 from app.db.base import Base
+
 
 class Upvote(Base):
     __tablename__ = "upvotes"
-    id = Column(UUID, primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID, ForeignKey("users.id", ondelete="CASCADE"))
-    post_id = Column(UUID, ForeignKey("posts.id", ondelete="CASCADE"), nullable=True)
-    comment_id = Column(UUID, ForeignKey("comments.id", ondelete="CASCADE"), nullable=True)
-    # unique constraint: one user, one vote per post/comment
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    post_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("posts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "post_id", name="unique_post_upvote"),
+    )

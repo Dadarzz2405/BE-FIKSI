@@ -1,13 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
+from sqlalchemy import desc, func
 from typing import Optional, List
 from datetime import datetime
 
 from app.db.session import get_db
 from app.models.post import Post
 from app.models.user import User
+from app.models.upvote import Upvote
 from app.core.auth_service import supabase_auth
 
 router = APIRouter()
@@ -61,6 +62,7 @@ class PostResponse(BaseModel):
     author: Optional[AuthorInfo] = None
     category_id: Optional[str] = None
     category: Optional[CategoryInfo] = None
+    upvote_count: int = 0
 
     class Config:
         from_attributes = True
@@ -104,7 +106,20 @@ def get_current_user(
     return user
 
 
-def _post_to_response(post: Post) -> PostResponse:
+def _get_upvote_counts(db: Session, post_ids: list) -> dict:
+    """Batch-fetch upvote counts for a list of post IDs."""
+    if not post_ids:
+        return {}
+    rows = (
+        db.query(Upvote.post_id, func.count(Upvote.id).label("cnt"))
+        .filter(Upvote.post_id.in_(post_ids))
+        .group_by(Upvote.post_id)
+        .all()
+    )
+    return {str(row.post_id): row.cnt for row in rows}
+
+
+def _post_to_response(post: Post, upvote_count: int = 0) -> PostResponse:
     author_info = None
     if post.author:
         author_info = AuthorInfo(
@@ -135,6 +150,7 @@ def _post_to_response(post: Post) -> PostResponse:
         author=author_info,
         category_id=str(post.category_id) if post.category_id else None,
         category=category_info,
+        upvote_count=upvote_count,
     )
 
 
@@ -161,15 +177,15 @@ def list_posts(
         .limit(limit)
         .all()
     )
+    counts = _get_upvote_counts(db, [p.id for p in posts])
     return PostListResponse(
-        posts=[_post_to_response(p) for p in posts],
+        posts=[_post_to_response(p, counts.get(str(p.id), 0)) for p in posts],
         total=total,
         page=page,
         limit=limit,
     )
 
 
-# ✅ FIX: register both /my and /my/ so either URL works
 @router.get("/my", response_model=PostListResponse)
 @router.get("/my/", response_model=PostListResponse, include_in_schema=False)
 def list_my_posts(
@@ -188,8 +204,9 @@ def list_my_posts(
         .limit(limit)
         .all()
     )
+    counts = _get_upvote_counts(db, [p.id for p in posts])
     return PostListResponse(
-        posts=[_post_to_response(p) for p in posts],
+        posts=[_post_to_response(p, counts.get(str(p.id), 0)) for p in posts],
         total=total,
         page=page,
         limit=limit,
@@ -202,7 +219,12 @@ def get_post(post_id: str, db: Session = Depends(get_db)):
     post = db.query(Post).filter(Post.id == post_id, Post.is_published == True).first()
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
-    return _post_to_response(post)
+    count = (
+        db.query(func.count(Upvote.id))
+        .filter(Upvote.post_id == post_id)
+        .scalar()
+    ) or 0
+    return _post_to_response(post, count)
 
 
 @router.post("/", response_model=PostResponse, status_code=201)
@@ -225,7 +247,7 @@ def create_post(
     db.add(post)
     db.commit()
     db.refresh(post)
-    return _post_to_response(post)
+    return _post_to_response(post, 0)
 
 
 @router.put("/{post_id}", response_model=PostResponse)
@@ -261,7 +283,12 @@ def update_post(
     post.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(post)
-    return _post_to_response(post)
+    count = (
+        db.query(func.count(Upvote.id))
+        .filter(Upvote.post_id == post_id)
+        .scalar()
+    ) or 0
+    return _post_to_response(post, count)
 
 
 @router.delete("/{post_id}", status_code=204)
