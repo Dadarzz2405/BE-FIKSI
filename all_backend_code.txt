@@ -1,0 +1,2607 @@
+"""
+Shared authentication dependency for API routes.
+Looks up the user by Supabase auth ID first, then falls back to email,
+matching the same logic used in auth.py's _get_or_create_supabase_user.
+"""
+# FastAPI dependencies and HTTP exception handling
+from fastapi import HTTPException, Header, Depends
+# SQLAlchemy ORM for database queries
+from sqlalchemy.orm import Session
+
+# Local imports for database and authentication
+from app.db.session import get_db
+from app.models.user import User
+from app.core.auth_service import supabase_auth
+
+
+# Dependency function to authenticate users via Bearer token
+def get_current_active_user(
+    authorization: str = Header(...),
+    db: Session = Depends(get_db),
+) -> User:
+    """
+    Validate a Supabase Bearer token and return the matching DB user.
+
+    Lookup order:
+      1. By Supabase auth UUID (fast path)
+      2. By email (fallback for users whose DB id differs from auth id,
+         e.g. email-signup users where ids may have diverged)
+
+    Auto-activates the user if is_active is False but token is valid,
+    because a valid Supabase token is proof of successful authentication.
+    """
+    # Validate authorization header format
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization format")
+
+    # Extract token from header and validate it's not null/undefined
+    token = authorization[7:].strip()
+    if not token or token in ("null", "undefined"):
+        raise HTTPException(status_code=401, detail="No valid token provided")
+
+    # Verify token with Supabase authentication service
+    try:
+        resp = supabase_auth.get_user(token)
+        if not resp.user:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Authentication failed")
+
+    auth_user = resp.user
+
+    # Primary lookup: Try by Supabase auth UUID
+    user = db.query(User).filter(User.id == auth_user.id).first()
+
+    # Fallback lookup: Try by email (handles id mismatch from email signup flow)
+    if not user:
+        email = getattr(auth_user, "email", None)
+        if email:
+            user = db.query(User).filter(User.email == email).first()
+
+    # User not found in database
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found in database")
+
+    # Auto-activate: valid token = authenticated user, so ensure is_active is True
+    if not user.is_active:
+        user.is_active = True
+        db.commit()
+        db.refresh(user)
+
+    return userfrom . import homepage, auth, profile, categories, comments, posts, upvote, quiz_submission
+
+__all__ = ["homepage", "auth", "profile", "categories", "comments", "posts", "upvote", "quiz_submission"]from fastapi import APIRouter, HTTPException, Depends, Header
+from pydantic import BaseModel, EmailStr, Field
+from typing import Optional, Any
+from sqlalchemy.orm import Session
+
+from app.db.session import get_db
+from app.models.user import User
+from app.core.auth_service import supabase_auth
+from app.core.config import FRONTEND_URL
+
+router = APIRouter()
+
+
+# ============================================================================
+# REQUEST/RESPONSE MODELS
+# ============================================================================
+
+class LoginRequest(BaseModel):
+    email: str = Field(..., description="Username atau alamat email")
+    password: str
+
+
+class SignupRequest(BaseModel):
+    email: EmailStr
+    password: str
+    username: str
+    real_name: Optional[str] = None
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: dict
+
+
+class SignupResponse(BaseModel):
+    access_token: Optional[str] = None
+    token_type: str = "bearer"
+    user: dict
+    requires_email_verification: bool = False
+    message: str
+
+
+class UserResponse(BaseModel):
+    id: str
+    email: str
+    username: str
+    real_name: Optional[str]
+    avatar_url: Optional[str]
+    bio: Optional[str]
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
+
+# ============================================================================
+# HELPERS
+# ============================================================================
+
+def _make_unique_username(base: str, db: Session) -> str:
+    import re
+    slug = re.sub(r"[^a-z0-9_]", "", base.lower().replace(" ", "_"))[:30] or "user"
+    username = slug
+    counter = 1
+    while db.query(User).filter(User.username == username).first():
+        username = f"{slug}{counter}"
+        counter += 1
+    return username
+
+
+def _get_or_create_supabase_user(auth_user: Any, db: Session) -> User:
+    """
+    Find existing user by Supabase Auth id or email, or create one on first login.
+    Always ensures the user is active after successful OAuth authentication.
+    """
+    auth_id = str(auth_user.id)
+    email: str = getattr(auth_user, "email", "") or ""
+    metadata = getattr(auth_user, "user_metadata", None) or {}
+    real_name: Optional[str] = (
+        metadata.get("full_name")
+        or metadata.get("name")
+        or metadata.get("real_name")
+    )
+    avatar_url: Optional[str] = metadata.get("avatar_url") or metadata.get("picture")
+
+    user = db.query(User).filter(User.id == auth_user.id).first()
+    if user:
+        # Activate and update avatar if needed
+        changed = False
+        if not user.is_active:
+            user.is_active = True
+            changed = True
+        if avatar_url and not user.avatar_url:
+            user.avatar_url = avatar_url
+            changed = True
+        if changed:
+            db.commit()
+            db.refresh(user)
+        return user
+
+    if email:
+        user = db.query(User).filter(User.email == email).first()
+        if user:
+            # Same email — link the OAuth identity and activate
+            changed = False
+            if not user.is_active:
+                user.is_active = True
+                changed = True
+            if avatar_url and not user.avatar_url:
+                user.avatar_url = avatar_url
+                changed = True
+            if changed:
+                db.commit()
+                db.refresh(user)
+            return user
+
+    # First-time OAuth login — auto-create DB row
+    base = (real_name or "").replace(" ", "_") or (email.split("@")[0] if email else "user")
+    username = _make_unique_username(base, db)
+
+    new_user = User(
+        id=auth_user.id,
+        email=email or f"{auth_id}@oauth.local",
+        username=username,
+        real_name=real_name,
+        avatar_url=avatar_url,
+        hashed_password="",
+        is_active=True,
+        bio="",
+        subscription="Free",
+    )
+    db.add(new_user)
+    try:
+        db.commit()
+        db.refresh(new_user)
+        return new_user
+    except Exception:
+        # Race condition: another concurrent request already inserted this user
+        db.rollback()
+        existing = db.query(User).filter(User.id == auth_user.id).first()
+        if existing:
+            if not existing.is_active:
+                existing.is_active = True
+                db.commit()
+                db.refresh(existing)
+            return existing
+        raise
+
+# ============================================================================
+# ENDPOINTS
+# ============================================================================
+
+@router.post("/login", response_model=AuthResponse)
+def login(credentials: LoginRequest, db: Session = Depends(get_db)):
+    try:
+        login_identifier = credentials.email.strip()
+        if not login_identifier:
+            raise HTTPException(status_code=400, detail="Username or email is required")
+
+        login_email = login_identifier
+        if "@" not in login_identifier:
+            user_by_username = db.query(User).filter(
+                User.username == login_identifier
+            ).first()
+            if not user_by_username:
+                raise HTTPException(
+                    status_code=401, detail="Invalid username/email or password"
+                )
+            login_email = user_by_username.email
+
+        auth_response = supabase_auth.sign_in(email=login_email, password=credentials.password)
+
+        if not auth_response.user:
+            raise HTTPException(status_code=401, detail="Invalid username/email or password")
+        if not auth_response.session:
+            raise HTTPException(
+                status_code=403, detail="Email not verified. Please verify your email first."
+            )
+
+        user = db.query(User).filter(User.id == auth_response.user.id).first()
+        if not user:
+            auth_email = getattr(auth_response.user, "email", None)
+            if auth_email:
+                user = db.query(User).filter(User.email == auth_email).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found in database")
+        if not user.is_active:
+            raise HTTPException(status_code=403, detail="Account is not active.")
+
+        return AuthResponse(
+            access_token=auth_response.session.access_token,
+            user={
+                "id": str(user.id), "email": user.email, "username": user.username,
+                "real_name": user.real_name, "avatar_url": user.avatar_url,
+                "bio": user.bio, "is_active": user.is_active,
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        if "email not confirmed" in str(e).lower():
+            raise HTTPException(status_code=403, detail="Email belum diverifikasi. Cek inbox Anda.")
+        print(f"Login error: {e}")
+        raise HTTPException(status_code=500, detail="Login failed. Please try again.")
+
+
+@router.post("/signup", response_model=SignupResponse)
+def signup(signup_data: SignupRequest, db: Session = Depends(get_db)):
+    try:
+        # Strip leading @ from username if user typed it (e.g. "@Dadarzz" → "Dadarzz")
+        signup_data.username = signup_data.username.lstrip("@")
+
+        existing = db.query(User).filter(
+            (User.email == signup_data.email) | (User.username == signup_data.username)
+        ).first()
+        if existing:
+            field = "email" if existing.email == signup_data.email else "username"
+            raise HTTPException(
+                status_code=400,
+                detail="User with this email already exists" if field == "email" else "Username is already taken",
+            )
+
+        auth_response = supabase_auth.sign_up(
+            email=signup_data.email,
+            password=signup_data.password,
+            redirect_url=f"{FRONTEND_URL.rstrip('/')}/auth/callback",
+        )
+        if not auth_response.user:
+            raise HTTPException(status_code=400, detail="Failed to create user account")
+
+        has_session = bool(auth_response.session)
+        new_user = User(
+            id=auth_response.user.id,
+            email=signup_data.email,
+            username=signup_data.username,
+            real_name=signup_data.real_name,
+            hashed_password="",
+            is_active=has_session,
+            bio="",
+            subscription="Free",
+        )
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+
+        return SignupResponse(
+            access_token=auth_response.session.access_token if has_session else None,
+            requires_email_verification=not has_session,
+            message=(
+                "Account created. Please verify your email before logging in."
+                if not has_session else "Account created successfully."
+            ),
+            user={
+                "id": str(new_user.id), "email": new_user.email, "username": new_user.username,
+                "real_name": new_user.real_name, "avatar_url": new_user.avatar_url,
+                "bio": new_user.bio, "is_active": new_user.is_active,
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        print(f"Signup error: {e}")
+        raise HTTPException(status_code=500, detail="Registration failed. Please try again.")
+
+
+@router.get("/google/url")
+def get_google_oauth_url(redirect_to: Optional[str] = None):
+    redirect_url = (redirect_to or f"{FRONTEND_URL.rstrip('/')}/auth/callback").strip()
+    url = supabase_auth.get_oauth_sign_in_url(provider="google", redirect_to=redirect_url)
+    return {"url": url}
+
+
+@router.post("/logout")
+def logout():
+    try:
+        supabase_auth.sign_out()
+    except Exception:
+        pass
+    return {"message": "Logged out successfully"}
+
+
+@router.get("/me", response_model=UserResponse)
+def get_current_user(authorization: str = Header(...), db: Session = Depends(get_db)):
+    """
+    Validate Supabase access token. Activates user if they authenticated via OAuth.
+    """
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization header.")
+
+    token = authorization.replace("Bearer ", "").strip()
+    if not token or token in ("null", "undefined"):
+        raise HTTPException(status_code=401, detail="No valid token. Please log in again.")
+
+    try:
+        auth_user_resp = supabase_auth.get_user(token)
+        if not auth_user_resp.user:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+        auth_user = auth_user_resp.user
+
+        # _get_or_create_supabase_user handles activation for OAuth users
+        user = _get_or_create_supabase_user(auth_user, db)
+
+        return UserResponse(
+            id=str(user.id), email=user.email, username=user.username,
+            real_name=user.real_name, avatar_url=user.avatar_url,
+            bio=user.bio, is_active=user.is_active,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Get current user error: {e}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
+
+
+@router.get("/health")
+def auth_health():
+    return {"status": "auth router ready"}from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from sqlalchemy import desc, func
+from typing import Optional, List
+
+from app.db.session import get_db
+from app.models.category import Category
+from app.models.post import Post
+
+router = APIRouter()
+
+
+# ============================================================================
+# SCHEMAS
+# ============================================================================
+
+class CategoryResponse(BaseModel):
+    id: str
+    name: str
+    slug: str
+    description: Optional[str]
+    icon: Optional[str]
+    post_count: int = 0
+
+    class Config:
+        from_attributes = True
+
+
+class CategoryListResponse(BaseModel):
+    categories: List[CategoryResponse]
+    total: int
+
+
+# ============================================================================
+# ENDPOINTS
+# ============================================================================
+
+@router.get("/", response_model=CategoryListResponse)
+def list_categories(db: Session = Depends(get_db)):
+    """List all categories with their post counts."""
+    categories = db.query(Category).order_by(Category.name).all()
+
+    result = []
+    for cat in categories:
+        count = (
+            db.query(func.count(Post.id))
+            .filter(Post.category_id == cat.id, Post.is_published == True)
+            .scalar()
+        ) or 0
+        result.append(CategoryResponse(
+            id=str(cat.id),
+            name=cat.name,
+            slug=cat.slug,
+            description=cat.description,
+            icon=cat.icon,
+            post_count=count,
+        ))
+
+    return CategoryListResponse(categories=result, total=len(result))
+
+
+@router.get("/{slug}", response_model=CategoryResponse)
+def get_category(slug: str, db: Session = Depends(get_db)):
+    """Get a single category by slug."""
+    cat = db.query(Category).filter(Category.slug == slug).first()
+    if not cat:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    count = (
+        db.query(func.count(Post.id))
+        .filter(Post.category_id == cat.id, Post.is_published == True)
+        .scalar()
+    ) or 0
+
+    return CategoryResponse(
+        id=str(cat.id),
+        name=cat.name,
+        slug=cat.slug,
+        description=cat.description,
+        icon=cat.icon,
+        post_count=count,
+    )
+
+
+@router.get("/{slug}/posts")
+def get_posts_by_category(
+    slug: str,
+    page: int = 1,
+    limit: int = 10,
+    db: Session = Depends(get_db),
+):
+    """Get all published posts in a category."""
+    cat = db.query(Category).filter(Category.slug == slug).first()
+    if not cat:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    offset = (page - 1) * limit
+    query = db.query(Post).filter(
+        Post.category_id == cat.id,
+        Post.is_published == True,
+    )
+    total = query.count()
+    posts = query.order_by(desc(Post.created_at)).offset(offset).limit(limit).all()
+
+    return {
+        "category": {"id": str(cat.id), "name": cat.name, "slug": cat.slug, "icon": cat.icon},
+        "posts": [
+            {
+                "id": str(p.id),
+                "title": p.title,
+                "excerpt": p.excerpt,
+                "image_url": p.image_url,
+                "created_at": p.created_at.isoformat(),
+                "author": {
+                    "username": p.author.username,
+                    "avatar_url": p.author.avatar_url,
+                } if p.author else None,
+            }
+            for p in posts
+        ],
+        "total": total,
+        "page": page,
+        "limit": limit,
+    }from fastapi import APIRouter, Depends, HTTPException, Header
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from sqlalchemy import desc, func
+from typing import Optional, List
+
+from app.db.session import get_db
+from app.models.comment import Comment
+from app.models.post import Post
+from app.models.user import User
+from app.core.auth_service import supabase_auth
+from app.core.gamification import award_points, get_rank
+
+router = APIRouter()
+
+
+# ── Schemas ──────────────────────────────────────────────────────────────────
+
+class CommentCreate(BaseModel):
+    content: str
+
+
+class RankInfo(BaseModel):
+    name: str
+    icon: str
+    min_rep: int
+
+
+class CommentAuthor(BaseModel):
+    username: str
+    avatar_url: Optional[str]
+    real_name: Optional[str]
+    level: int = 1
+    reputation: int = 0
+    cp_total: int = 0
+    rank: RankInfo = RankInfo(name="Bronze", icon="🥉", min_rep=0)
+
+
+class CommentResponse(BaseModel):
+    id: str
+    post_id: str
+    content: str
+    is_accepted: bool
+    created_at: str
+    author_id: str
+    upvote_count: int = 0
+    has_upvoted: bool = False
+    author: Optional[CommentAuthor]
+
+    class Config:
+        from_attributes = True
+
+
+# ── Auth dependency ───────────────────────────────────────────────────────────
+
+def get_current_user(authorization: str = Header(...), db: Session = Depends(get_db)) -> User:
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization format")
+    token = authorization.replace("Bearer ", "")
+    try:
+        resp = supabase_auth.get_user(token)
+        if not resp.user:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Authentication failed")
+    user = db.query(User).filter(User.id == resp.user.id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is inactive")
+    return user
+
+
+def get_optional_user(
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+) -> Optional[User]:
+    """Auth dependency that returns None instead of raising when no token is present."""
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization.replace("Bearer ", "").strip()
+    if not token or token in ("null", "undefined"):
+        return None
+    try:
+        resp = supabase_auth.get_user(token)
+        if not resp.user:
+            return None
+        return db.query(User).filter(User.id == resp.user.id).first()
+    except Exception:
+        return None
+
+
+def _author_response(u: User) -> CommentAuthor:
+    rep = u.reputation or 0
+    return CommentAuthor(
+        username=u.username,
+        avatar_url=u.avatar_url,
+        real_name=u.real_name,
+        level=u.level or 1,
+        reputation=rep,
+        cp_total=u.cp_total or 0,
+        rank=RankInfo(**get_rank(rep)),
+    )
+
+
+def _comment_to_response(
+    c: Comment,
+    db: Session,
+    viewer_id: Optional[str] = None,
+) -> CommentResponse:
+    # Count upvotes from the upvotes table
+    upvote_count = db.query(func.count()).filter(
+        __import__("app.models.upvote", fromlist=["Upvote"]).Upvote.comment_id == c.id
+    ).scalar() or 0
+
+    has_upvoted = False
+    if viewer_id:
+        from app.models.upvote import Upvote
+        has_upvoted = db.query(Upvote).filter(
+            Upvote.comment_id == c.id,
+            Upvote.user_id    == viewer_id,
+        ).first() is not None
+
+    return CommentResponse(
+        id=str(c.id),
+        post_id=str(c.post_id),
+        content=c.content,
+        is_accepted=c.is_accepted,
+        created_at=c.created_at.isoformat(),
+        author_id=str(c.author_id),
+        upvote_count=upvote_count,
+        has_upvoted=has_upvoted,
+        author=_author_response(c.author) if c.author else None,
+    )
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@router.get("/posts/{post_id}/comments", response_model=List[CommentResponse])
+def list_comments(
+    post_id: str,
+    current_user: Optional[User] = Depends(get_optional_user),
+    db: Session = Depends(get_db),
+):
+    post = db.query(Post).filter(Post.id == post_id).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+
+    comments = (
+        db.query(Comment)
+        .filter(Comment.post_id == post_id)
+        .order_by(desc(Comment.is_accepted), Comment.created_at)
+        .all()
+    )
+    viewer_id = str(current_user.id) if current_user else None
+    return [_comment_to_response(c, db, viewer_id) for c in comments]
+
+
+@router.post("/posts/{post_id}/comments", response_model=CommentResponse, status_code=201)
+def create_comment(
+    post_id: str,
+    body: CommentCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    post = db.query(Post).filter(Post.id == post_id, Post.is_published == True).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    if not body.content.strip():
+        raise HTTPException(status_code=400, detail="Content cannot be empty")
+    if str(post.author_id) == str(current_user.id):
+        raise HTTPException(status_code=400, detail="You cannot answer your own question")
+
+    comment = Comment(
+        post_id=post.id,
+        author_id=current_user.id,
+        content=body.content.strip(),
+    )
+    db.add(comment)
+    db.commit()
+    db.refresh(comment)
+
+    award_points(current_user.id, "comment_created", db)
+    return _comment_to_response(comment, db, str(current_user.id))
+
+
+@router.patch("/comments/{comment_id}/accept", response_model=CommentResponse)
+def accept_comment(
+    comment_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    comment = db.query(Comment).filter(Comment.id == comment_id).first()
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+
+    post = db.query(Post).filter(Post.id == comment.post_id).first()
+    if not post or str(post.author_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="Only the post author can accept answers")
+
+    db.query(Comment).filter(
+        Comment.post_id == comment.post_id,
+        Comment.is_accepted == True,
+    ).update({"is_accepted": False})
+
+    comment.is_accepted = True
+    db.commit()
+    db.refresh(comment)
+
+    # Award the answerer (not the question asker)
+    award_points(comment.author_id, "comment_accepted", db)
+    return _comment_to_response(comment, db, str(current_user.id))
+
+
+@router.post("/comments/{comment_id}/upvote", response_model=CommentResponse)
+def upvote_comment(
+    comment_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Toggle upvote on a comment. Returns the updated comment."""
+    from app.models.upvote import Upvote
+
+    comment = db.query(Comment).filter(Comment.id == comment_id).first()
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    if str(comment.author_id) == str(current_user.id):
+        raise HTTPException(status_code=400, detail="You cannot upvote your own answer")
+
+    existing = db.query(Upvote).filter(
+        Upvote.comment_id == comment_id,
+        Upvote.user_id    == current_user.id,
+    ).first()
+
+    if existing:
+        # Un-upvote
+        db.delete(existing)
+        db.commit()
+    else:
+        # Upvote — award points to the answer author
+        db.add(Upvote(user_id=current_user.id, comment_id=comment_id))
+        db.commit()
+        award_points(comment.author_id, "comment_upvoted", db)
+
+    db.refresh(comment)
+    return _comment_to_response(comment, db, str(current_user.id))
+
+
+@router.delete("/comments/{comment_id}", status_code=204)
+def delete_comment(
+    comment_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    comment = db.query(Comment).filter(Comment.id == comment_id).first()
+    if not comment:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    if str(comment.author_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="You can only delete your own comments")
+    db.delete(comment)
+    db.commit()
+    return None# Homepage routes for displaying feed, posts, and platform statistics
+from fastapi import APIRouter, Query, Depends
+from pydantic import BaseModel
+from typing import List, Optional
+from sqlalchemy.orm import Session
+from sqlalchemy import desc
+
+# Import database session dependency and models
+from app.db.session import get_db
+from app.models.post import Post
+
+# Create router for homepage endpoints
+router = APIRouter()
+
+
+# ── Response Models ────────────────────────────────────────────────────────────
+
+class HomepagePostResponse(BaseModel):
+    """Schema for post items shown on homepage."""
+    id: str
+    title: str
+    description: Optional[str] = None
+    created_at: str
+    author: Optional[str] = None
+    image_url: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class HomepageStats(BaseModel):
+    """Schema for platform statistics."""
+    total_quizzes: int
+    published_quizzes: int
+    draft_quizzes: int
+
+
+class HomepageResponse(BaseModel):
+    """Schema for full homepage response."""
+    title: str
+    description: str
+    status: str
+    stats: HomepageStats
+    featured_sections: List[str]
+
+
+class HomepageFeedResponse(BaseModel):
+    """Schema for homepage feed (latest + popular posts)."""
+    status: str
+    latest_post: Optional[HomepagePostResponse]
+    popular_posts: List[HomepagePostResponse]
+
+
+# ── Helper Functions ──────────────────────────────────────────────────────────
+
+def _fetch_published_posts(
+    db: Session,
+    limit: int,
+) -> List[HomepagePostResponse]:
+    """Fetch published posts from database, ordered by newest first."""
+    try:
+        # Query published posts, ordered by creation date (newest first)
+        posts = (
+            db.query(Post)
+            .filter(Post.is_published == True)
+            .order_by(desc(Post.created_at))
+            .limit(limit)
+            .all()
+        )
+        
+        # Convert to response schema
+        return [
+            HomepagePostResponse(
+                id=str(post.id),
+                title=post.title,
+                description=post.excerpt,
+                created_at=post.created_at.isoformat(),
+                author=str(post.author_id) if post.author_id else None,
+                image_url=post.image_url,
+            )
+            for post in posts
+        ]
+    except Exception as exc:
+        print(f"Error fetching posts: {exc}")
+        return []
+
+
+def _build_homepage_payload() -> HomepageResponse:
+    """Build static homepage payload with platform info."""
+    return HomepageResponse(
+        title="Dadarzz FIKSI",
+        description="Prototype.",
+        status="ok",
+        stats=HomepageStats(
+            total_quizzes=0,
+            published_quizzes=0,
+            draft_quizzes=0,
+        ),
+        featured_sections=[
+            "Latest Quizzes",
+            "Trending Topics",
+            "Your Drafts",
+        ],
+    )
+
+
+# ── Endpoints ──────────────────────────────────────────────────────────────────
+
+@router.get("/health")
+def homepage_health() -> dict[str, str]:
+    """Health check endpoint."""
+    return {"status": "homepage router ready"}
+
+
+@router.get("/", response_model=HomepageFeedResponse)
+def get_homepage(
+    popular_limit: int = Query(default=5, ge=1, le=20),
+    db: Session = Depends(get_db),
+) -> HomepageFeedResponse:
+    """Get homepage feed with latest and popular posts."""
+    # Fetch posts (one extra to separate latest from popular)
+    posts = _fetch_published_posts(db=db, limit=max(popular_limit, 1) + 1)
+    # First post is the latest
+    latest_post = posts[0] if posts else None
+    # Remaining posts are popular
+    popular_posts = posts[1 : popular_limit + 1] if posts else []
+
+    return HomepageFeedResponse(
+        status="ok",
+        latest_post=latest_post,
+        popular_posts=popular_posts,
+    )
+
+
+@router.get("/posts", response_model=List[HomepagePostResponse])
+def get_homepage_posts(
+    limit: int = Query(default=10, ge=1, le=50),
+    db: Session = Depends(get_db),
+) -> List[HomepagePostResponse]:
+    """Get all published posts with optional limit."""
+    return _fetch_published_posts(db=db, limit=limit)from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from sqlalchemy import desc
+from typing import List
+
+from app.db.session import get_db
+from app.models.user import User
+from app.core.gamification import get_rank
+
+router = APIRouter()
+
+
+class LeaderboardEntry(BaseModel):
+    rank_position: int
+    user_id:    str
+    username:   str
+    real_name:  str | None
+    avatar_url: str | None
+    level:      int
+    xp_total:   int
+    reputation: int
+    cp_total:   int
+    rank_name:  str
+    rank_icon:  str
+
+
+@router.get("/", response_model=List[LeaderboardEntry])
+def get_leaderboard(
+    sort_by: str = Query(
+        default="reputation",
+        regex="^(reputation|xp_total|cp_total|level)$",
+        description="Sort column: reputation | xp_total | cp_total | level",
+    ),
+    limit: int = Query(default=20, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    sort_col = {
+        "reputation": User.reputation,
+        "xp_total":   User.xp_total,
+        "cp_total":   User.cp_total,
+        "level":      User.level,
+    }.get(sort_by, User.reputation)
+
+    users = (
+        db.query(User)
+        .filter(User.is_active == True)
+        .order_by(desc(sort_col))
+        .limit(limit)
+        .all()
+    )
+
+    return [
+        LeaderboardEntry(
+            rank_position=i + 1,
+            user_id=str(u.id),
+            username=u.username,
+            real_name=u.real_name,
+            avatar_url=u.avatar_url,
+            level=u.level      or 1,
+            xp_total=u.xp_total   or 0,
+            reputation=u.reputation or 0,
+            cp_total=u.cp_total   or 0,
+            rank_name=get_rank(u.reputation or 0)["name"],
+            rank_icon=get_rank(u.reputation or 0)["icon"],
+        )
+        for i, u in enumerate(users)
+    ]from fastapi import APIRouter, Depends, HTTPException, Header, Query
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from sqlalchemy import desc
+from typing import Optional, List
+from datetime import datetime
+
+from app.db.session import get_db
+from app.models.post import Post
+from app.models.user import User
+from app.core.auth_service import supabase_auth
+from app.core.gamification import award_points, get_rank
+
+router = APIRouter()
+
+
+# ── Schemas ───────────────────────────────────────────────────────────────────
+
+class PostCreate(BaseModel):
+    title: str
+    content: str
+    excerpt: Optional[str] = None
+    image_url: Optional[str] = None
+    is_published: bool = True
+    category_id: Optional[str] = None
+
+
+class PostUpdate(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    excerpt: Optional[str] = None
+    image_url: Optional[str] = None
+    is_published: Optional[bool] = None
+    category_id: Optional[str] = None
+
+
+class RankInfo(BaseModel):
+    name: str
+    icon: str
+    min_rep: int
+
+
+class AuthorInfo(BaseModel):
+    username: str
+    real_name: Optional[str]
+    avatar_url: Optional[str]
+    level: int = 1
+    reputation: int = 0
+    cp_total: int = 0
+    rank: RankInfo = RankInfo(name="Bronze", icon="🥉", min_rep=0)
+
+
+class CategoryInfo(BaseModel):
+    id: str
+    name: str
+    slug: str
+    icon: Optional[str]
+
+
+class PostResponse(BaseModel):
+    id: str
+    title: str
+    content: str
+    excerpt: Optional[str]
+    image_url: Optional[str]
+    is_published: bool
+    created_at: str
+    updated_at: str
+    author_id: str
+    author: Optional[AuthorInfo] = None
+    category_id: Optional[str] = None
+    category: Optional[CategoryInfo] = None
+
+    class Config:
+        from_attributes = True
+
+
+class PostListResponse(BaseModel):
+    posts: List[PostResponse]
+    total: int
+    page: int
+    limit: int
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+
+def get_current_user(authorization: str = Header(...), db: Session = Depends(get_db)) -> User:
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization format")
+    token = authorization.replace("Bearer ", "")
+    try:
+        auth_user = supabase_auth.get_user(token)
+        if not auth_user.user:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Authentication failed")
+    user = db.query(User).filter(User.id == auth_user.user.id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is inactive")
+    return user
+
+
+def _author_info(u: User) -> AuthorInfo:
+    rep = u.reputation or 0
+    return AuthorInfo(
+        username=u.username,
+        real_name=u.real_name,
+        avatar_url=u.avatar_url,
+        level=u.level or 1,
+        reputation=rep,
+        cp_total=u.cp_total or 0,
+        rank=RankInfo(**get_rank(rep)),
+    )
+
+
+def _post_to_response(post: Post) -> PostResponse:
+    return PostResponse(
+        id=str(post.id),
+        title=post.title,
+        content=post.content,
+        excerpt=post.excerpt,
+        image_url=post.image_url,
+        is_published=post.is_published,
+        created_at=post.created_at.isoformat(),
+        updated_at=post.updated_at.isoformat(),
+        author_id=str(post.author_id),
+        author=_author_info(post.author) if post.author else None,
+        category_id=str(post.category_id) if post.category_id else None,
+        category=CategoryInfo(
+            id=str(post.category.id), name=post.category.name,
+            slug=post.category.slug, icon=post.category.icon,
+        ) if post.category else None,
+    )
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@router.get("/", response_model=PostListResponse)
+def list_posts(
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=10, ge=1, le=50),
+    category_id: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    offset = (page - 1) * limit
+    query  = db.query(Post).filter(Post.is_published == True)
+    if category_id:
+        query = query.filter(Post.category_id == category_id)
+    total = query.count()
+    posts = query.order_by(desc(Post.created_at)).offset(offset).limit(limit).all()
+    return PostListResponse(posts=[_post_to_response(p) for p in posts],
+                            total=total, page=page, limit=limit)
+
+
+@router.get("/my", response_model=PostListResponse)
+@router.get("/my/", response_model=PostListResponse, include_in_schema=False)
+def list_my_posts(
+    page: int = Query(default=1, ge=1),
+    limit: int = Query(default=10, ge=1, le=50),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    offset = (page - 1) * limit
+    query  = db.query(Post).filter(Post.author_id == current_user.id)
+    total  = query.count()
+    posts  = query.order_by(desc(Post.created_at)).offset(offset).limit(limit).all()
+    return PostListResponse(posts=[_post_to_response(p) for p in posts],
+                            total=total, page=page, limit=limit)
+
+
+@router.get("/{post_id}", response_model=PostResponse)
+def get_post(post_id: str, db: Session = Depends(get_db)):
+    post = db.query(Post).filter(Post.id == post_id, Post.is_published == True).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    return _post_to_response(post)
+
+
+@router.post("/", response_model=PostResponse, status_code=201)
+def create_post(
+    body: PostCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    import uuid as _uuid
+    post = Post(
+        title=body.title,
+        content=body.content,
+        excerpt=body.excerpt or body.content[:160],
+        image_url=body.image_url,
+        is_published=body.is_published,
+        author_id=current_user.id,
+        category_id=_uuid.UUID(body.category_id) if body.category_id else None,
+    )
+    db.add(post)
+    db.commit()
+    db.refresh(post)
+    if body.is_published:
+        award_points(current_user.id, "post_created", db)
+    return _post_to_response(post)
+
+
+@router.put("/{post_id}", response_model=PostResponse)
+def update_post(
+    post_id: str,
+    body: PostUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    import uuid as _uuid
+    post = db.query(Post).filter(Post.id == post_id).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    if str(post.author_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="You can only edit your own posts")
+    if body.title is not None: post.title = body.title
+    if body.content is not None:
+        post.content = body.content
+        if body.excerpt is None: post.excerpt = body.content[:160]
+    if body.excerpt    is not None: post.excerpt     = body.excerpt
+    if body.image_url  is not None: post.image_url   = body.image_url
+    if body.is_published is not None: post.is_published = body.is_published
+    if body.category_id  is not None:
+        post.category_id = _uuid.UUID(body.category_id) if body.category_id else None
+    post.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(post)
+    return _post_to_response(post)
+
+
+@router.delete("/{post_id}", status_code=204)
+def delete_post(
+    post_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    post = db.query(Post).filter(Post.id == post_id).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+    if str(post.author_id) != str(current_user.id):
+        raise HTTPException(status_code=403, detail="You can only delete your own posts")
+    db.delete(post)
+    db.commit()
+    return Nonefrom fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from typing import Optional
+from datetime import datetime
+import uuid, mimetypes
+
+from app.db.session import get_db
+from app.models.user import User
+from app.core.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+from app.api.dependencies import get_current_active_user
+from app.core.gamification import xp_for_level, get_rank, next_rank_threshold
+
+router = APIRouter()
+
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+MAX_AVATAR_SIZE     = 5 * 1024 * 1024
+
+
+class RankInfo(BaseModel):
+    name: str
+    icon: str
+    min_rep: int
+
+
+class ShowProfile(BaseModel):
+    id: str
+    real_name: Optional[str]
+    username: str
+    avatar_url: Optional[str]
+    bio: Optional[str]
+    is_active: bool
+    created_at: datetime
+    # ── Gamification ─────────────────────────────────────────────────────────
+    level:             int      = 1
+    xp_current:        int      = 0
+    xp_total:          int      = 0
+    xp_to_next_level:  int      = 100
+    reputation:        int      = 0
+    cp_total:          int      = 0
+    rank:              RankInfo = RankInfo(name="Bronze", icon="🥉", min_rep=0)
+    rep_to_next_rank:  Optional[int] = None   # None = already at max
+
+    class Config:
+        from_attributes = True
+
+
+class UpdateProfileBody(BaseModel):
+    username:   Optional[str] = None
+    real_name:  Optional[str] = None
+    bio:        Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
+def _to_response(user: User) -> ShowProfile:
+    level      = user.level      or 1
+    xp_current = user.xp_current or 0
+    reputation = user.reputation or 0
+    cp_total   = user.cp_total   or 0
+    rank_data  = get_rank(reputation)
+    next_thr   = next_rank_threshold(reputation)
+
+    return ShowProfile(
+        id=str(user.id),
+        real_name=user.real_name,
+        username=user.username,
+        avatar_url=user.avatar_url,
+        bio=user.bio,
+        is_active=user.is_active,
+        created_at=user.created_at,
+        level=level,
+        xp_current=xp_current,
+        xp_total=user.xp_total or 0,
+        xp_to_next_level=xp_for_level(level),
+        reputation=reputation,
+        cp_total=cp_total,
+        rank=RankInfo(**rank_data),
+        rep_to_next_rank=(next_thr - reputation) if next_thr else None,
+    )
+
+
+@router.patch("/me", response_model=ShowProfile)
+def update_my_profile(
+    body: UpdateProfileBody,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    if body.username is not None:
+        clean = body.username.strip()
+        if not clean or len(clean) > 50:
+            raise HTTPException(status_code=400, detail="Username must be 1–50 characters")
+        if db.query(User).filter(User.username == clean, User.id != current_user.id).first():
+            raise HTTPException(status_code=400, detail="Username already taken")
+        current_user.username = clean
+    if body.real_name  is not None: current_user.real_name  = body.real_name
+    if body.bio        is not None: current_user.bio        = body.bio
+    if body.avatar_url is not None: current_user.avatar_url = body.avatar_url
+    current_user.updated_at = datetime.utcnow()
+    db.commit(); db.refresh(current_user)
+    return _to_response(current_user)
+
+
+@router.post("/me/avatar", response_model=ShowProfile)
+async def upload_profile_photo(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(status_code=500, detail="Storage not configured")
+    content_type = file.content_type or "image/jpeg"
+    if content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(status_code=400, detail="Only JPEG, PNG, GIF, or WebP images are allowed")
+    data = await file.read()
+    if len(data) > MAX_AVATAR_SIZE:
+        raise HTTPException(status_code=400, detail="File too large (max 5 MB)")
+    ext = mimetypes.guess_extension(content_type) or ".jpg"
+    if ext == ".jpe": ext = ".jpg"
+    filename = f"avatars/{current_user.id}_{uuid.uuid4()}{ext}"
+    from supabase import create_client
+    client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    try:
+        try:
+            existing = client.storage.list_buckets()
+            if not any(b["name"] == "avatars" for b in existing):
+                client.storage.create_bucket("avatars", options={"public": True})
+        except Exception:
+            pass
+        client.storage.from_("avatars").upload(filename, data, file_options={"content-type": content_type})
+        url = client.storage.from_("avatars").get_public_url(filename)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {exc}")
+    current_user.avatar_url = url
+    current_user.updated_at = datetime.utcnow()
+    db.commit(); db.refresh(current_user)
+    return _to_response(current_user)
+
+
+@router.get("/{username}", response_model=ShowProfile)
+def get_profile(username: str, db: Session = Depends(get_db)):
+    clean = username.lstrip("@")
+    user = db.query(User).filter(User.username == clean).first()
+    if not user:
+        user = db.query(User).filter(User.username == username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return _to_response(user)
+
+
+@router.get("/id/{user_id}", response_model=ShowProfile)
+def get_profile_by_id(user_id: str, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return _to_response(user)"""
+app/api/routes/quiz_submissions.py
+
+Handles quiz answer submissions and awards XP / REP / CP based on
+score percentage and difficulty.
+
+Drop this alongside your existing quiz routes and register it in main.py:
+    app.include_router(quiz_submissions.router, tags=["Quizzes"])
+"""
+# Core FastAPI imports for routing and dependency injection
+from fastapi import APIRouter, Depends, HTTPException, Header
+# Pydantic for request/response data validation
+from pydantic import BaseModel
+# SQLAlchemy for database sessions
+from sqlalchemy.orm import Session
+from typing import Optional
+
+# Local imports for database, models, and authentication
+from app.db.session import get_db
+from app.models.user import User
+from app.core.auth_service import supabase_auth
+from app.core.gamification import award_points, quiz_event_name
+
+# Create router instance for quiz submission endpoints
+router = APIRouter()
+
+
+# Request model for quiz submission data
+class QuizSubmission(BaseModel):
+    quiz_id:    str
+    score:      int   # number of correct answers
+    total:      int   # total number of questions
+    difficulty: str   # "easy" | "medium" | "hard" | "expert"
+
+
+# Response model containing quiz results and rewards earned
+class QuizResult(BaseModel):
+    score:      int
+    total:      int
+    score_pct:  float
+    passed:     bool
+    event:      Optional[str]
+    xp_gained:  int = 0
+    rep_gained: int = 0
+    cp_gained:  int = 0
+    leveled_up: bool = False
+    new_level:  int = 1
+    message:    str
+
+# Dependency function to extract and validate the current user from JWT token
+def get_current_user(authorization: str = Header(...), db: Session = Depends(get_db)) -> User:
+    # Validate that the authorization header follows "Bearer <token>" format
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid authorization format")
+    
+    # Extract the token by removing "Bearer " prefix
+    token = authorization.replace("Bearer ", "")
+    
+    try:
+        # Verify the token with Supabase and get user info
+        resp = supabase_auth.get_user(token)
+        if not resp.user:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Authentication failed")
+    
+    # Query database for the user matching the token
+    user = db.query(User).filter(User.id == resp.user.id).first()
+    
+    # Ensure user exists and is active
+    if not user or not user.is_active:
+        raise HTTPException(status_code=403, detail="User not found or inactive")
+    return user
+
+
+# POST endpoint to submit a completed quiz and calculate rewards
+@router.post("/quizzes/submit", response_model=QuizResult)
+def submit_quiz(
+    body: QuizSubmission,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Submit a completed quiz and receive XP / REP / CP awards.
+
+    Score threshold:  ≥ 60% to pass (earn points).
+    Difficulty scales award amounts — see gamification.py EVENTS table.
+    """
+    # Validate that total questions is greater than 0
+    if body.total <= 0:
+        raise HTTPException(status_code=400, detail="total must be > 0")
+    
+    # Validate that score is within the range of total questions
+    if not 0 <= body.score <= body.total:
+        raise HTTPException(status_code=400, detail="score must be between 0 and total")
+
+    # Calculate the percentage score (e.g., 15/20 = 0.75)
+    score_pct = body.score / body.total
+    
+    # Determine the event type based on difficulty and score percentage
+    event     = quiz_event_name(body.difficulty, score_pct)
+
+    # If event is None, user didn't meet 60% threshold - return failed result
+    if event is None:
+        return QuizResult(
+            score=body.score,
+            total=body.total,
+            score_pct=round(score_pct, 2),
+            passed=False,
+            event=None,
+            message=f"Score {body.score}/{body.total} ({round(score_pct*100)}%) — need ≥60% to earn points.",
+        )
+
+    # Award points to the user based on the event type
+    result = award_points(current_user.id, event, db)
+
+    # Format difficulty label for a readable message
+    difficulty_label = body.difficulty.capitalize()
+    
+    # Return successful result with all earned points and user progression info
+    # Return successful result with all earned points and user progression info
+    return QuizResult(
+        score=body.score,
+        total=body.total,
+        score_pct=round(score_pct, 2),
+        passed=True,
+        event=event,
+        xp_gained=result.get("xp_gained", 0),
+        rep_gained=result.get("rep_gained", 0),
+        cp_gained=result.get("cp_gained", 0),
+        leveled_up=result.get("leveled_up", False),
+        new_level=result.get("new_level", current_user.level or 1),
+        # Create a celebratory message with emoji if user leveled up
+        message=(
+            f"{'🎉 Level up! ' if result.get('leveled_up') else ''}"
+            f"{difficulty_label} quiz passed! "
+            f"+{result['xp_gained']} XP · +{result['rep_gained']} REP · +{result['cp_gained']} CP"
+        ),
+    )# app/api/routes/upload.py
+import uuid
+import mimetypes
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
+
+from app.models.user import User
+from app.api.dependencies import get_current_active_user
+from app.core.storage_service import (
+    upload_file, ALLOWED_IMAGE_TYPES, MAX_FILE_SIZE, EXTENSION_MAP, VALID_BUCKETS
+)
+
+router = APIRouter()
+
+
+@router.post("/image")
+async def upload_image(
+    file: UploadFile = File(...),
+    bucket: str = Query(default="post-images"),
+    current_user: User = Depends(get_current_active_user),
+):
+    if bucket not in VALID_BUCKETS:
+        raise HTTPException(status_code=400, detail=f"Invalid bucket. Choose from: {VALID_BUCKETS}")
+
+    content_type = file.content_type or "image/jpeg"
+    if content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(status_code=400, detail="Only JPEG, PNG, GIF, or WebP images are allowed")
+
+    data = await file.read()
+    if len(data) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File too large — maximum 5 MB")
+
+    ext = EXTENSION_MAP.get(content_type, ".jpg")
+    filename = f"{uuid.uuid4()}{ext}"
+
+    try:
+        url = upload_file(bucket, filename, data, content_type)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return {"url": url, "filename": filename}from fastapi import APIRouter, Depends, HTTPException, Header
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+from typing import Optional
+
+from app.db.session import get_db
+from app.models.upvote import Upvote
+from app.models.post import Post
+from app.models.user import User
+from app.api.dependencies import get_current_active_user
+from app.core.auth_service import supabase_auth
+
+router = APIRouter()
+
+
+class UpvoteResponse(BaseModel):
+    upvote_count: int
+    is_upvoted: bool
+
+
+@router.get("/posts/{post_id}/upvote", response_model=UpvoteResponse)
+def get_upvote_status(
+    post_id: str,
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    """Get upvote count and whether the current user has upvoted."""
+    post = db.query(Post).filter(Post.id == post_id, Post.is_published == True).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+
+    count = (
+        db.query(func.count(Upvote.id))
+        .filter(Upvote.post_id == post_id)
+        .scalar()
+    ) or 0
+
+    is_upvoted = False
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:].strip()
+        if token and token not in ("null", "undefined"):
+            try:
+                resp = supabase_auth.get_user(token)
+                if resp.user:
+                    existing = (
+                        db.query(Upvote)
+                        .filter(Upvote.user_id == resp.user.id, Upvote.post_id == post_id)
+                        .first()
+                    )
+                    is_upvoted = existing is not None
+            except Exception:
+                pass
+
+    return UpvoteResponse(upvote_count=count, is_upvoted=is_upvoted)
+
+
+@router.post("/posts/{post_id}/upvote", response_model=UpvoteResponse)
+def toggle_upvote(
+    post_id: str,
+    current_user: User = Depends(get_current_active_user),
+    db: Session = Depends(get_db),
+):
+    """Toggle upvote on a post. Returns new count and upvote state."""
+    post = db.query(Post).filter(Post.id == post_id, Post.is_published == True).first()
+    if not post:
+        raise HTTPException(status_code=404, detail="Post not found")
+
+    existing = (
+        db.query(Upvote)
+        .filter(Upvote.user_id == current_user.id, Upvote.post_id == post_id)
+        .first()
+    )
+
+    if existing:
+        db.delete(existing)
+        db.commit()
+        is_upvoted = False
+    else:
+        upvote = Upvote(user_id=current_user.id, post_id=post_id)
+        db.add(upvote)
+        db.commit()
+        is_upvoted = True
+
+    count = (
+        db.query(func.count(Upvote.id))
+        .filter(Upvote.post_id == post_id)
+        .scalar()
+    ) or 0
+
+    return UpvoteResponse(upvote_count=count, is_upvoted=is_upvoted)# app/core/auth_service.py
+# Supabase authentication service wrapper
+
+from urllib.parse import urlencode
+# Supabase Python client for authentication and data access
+from supabase import Client, create_client
+from typing import Optional
+# Import configuration with Supabase credentials
+from app.core.config import SUPABASE_URL, SUPABASE_ANON_KEY  # ← anon key only
+
+
+# Singleton service class to manage Supabase authentication operations
+class SupabaseAuthService:
+    def __init__(self):
+        # Lazy-loaded Supabase client instance
+        self._client: Optional[Client] = None
+
+    @property
+    def client(self) -> Client:
+        """Initialize and cache Supabase client on first access."""
+        if self._client is None:
+            # Auth service always uses the anon key — it validates user JWTs,
+            # which Supabase checks against its own secret, not your service key.
+            self._client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+        return self._client
+
+    def sign_up(self, email: str, password: str, redirect_url: Optional[str] = None):
+        """Create a new user account with optional redirect URL for email confirmation."""
+        credentials: dict = {"email": email, "password": password}
+        if redirect_url:
+            credentials["options"] = {"emailRedirectTo": redirect_url}
+        return self.client.auth.sign_up(credentials)
+
+    def sign_in(self, email: str, password: str):
+        """Authenticate user with email and password."""
+        return self.client.auth.sign_in_with_password({"email": email, "password": password})
+
+    def sign_out(self):
+        """Sign out the current user."""
+        return self.client.auth.sign_out()
+
+    def get_user(self, access_token: str):
+        """Retrieve user info from a valid JWT access token."""
+        return self.client.auth.get_user(access_token)
+
+    def get_oauth_sign_in_url(self, provider: str, redirect_to: str) -> str:
+        """Generate OAuth login URL for social authentication."""
+        base = SUPABASE_URL.rstrip("/")
+        params = urlencode({"provider": provider, "redirect_to": redirect_to})
+        return f"{base}/auth/v1/authorize?{params}"
+
+
+# Global singleton instance for authentication service
+supabase_auth = SupabaseAuthService()# app/core/config.py
+# Environment variable loading and application configuration
+
+import os
+# Utilities for file path handling
+from pathlib import Path
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
+# Get base directory for database file location
+BASE_DIR = Path(__file__).resolve().parent.parent
+# Database connection URL from environment or fallback to SQLite
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'fiksi.db'}")
+
+# Supabase API endpoint
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+
+# Anon key: public key for auth flows and RLS-respecting operations
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+
+# Service role key: bypasses RLS, ONLY for server-side admin/storage operations
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+
+# Legacy alias — kept so existing code that imports SUPABASE_KEY still works
+# Points to anon key intentionally; service role is accessed explicitly
+SUPABASE_KEY = SUPABASE_ANON_KEY
+
+# Frontend URL for CORS and redirects
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
+# Fail fast at startup rather than getting cryptic errors later
+if not SUPABASE_URL:
+    raise RuntimeError("SUPABASE_URL environment variable is not set")
+if not SUPABASE_ANON_KEY:
+    raise RuntimeError("SUPABASE_ANON_KEY environment variable is not set")
+if not SUPABASE_SERVICE_ROLE_KEY:
+    raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY environment variable is not set")from collections.abc import Generator
+from sqlalchemy.orm import Session
+
+from app.db.session import get_db
+
+
+def get_database() -> Generator[Session, None, None]:
+    """Dependency for getting database sessions."""
+    yield from get_db()"""
+app/core/gamification.py
+
+Unified points service for Nusa CoNex.
+Three parallel currencies:
+  XP  – drives levels, earned by everyone for participation
+  REP – drives rank tier, earned by quality contributions
+  CP  – Challenge Points, earned competitively (quizzes + best answers)
+
+Event table
+───────────────────────────────────────────────────────────
+event                  XP    REP   CP    notes
+───────────────────────────────────────────────────────────
+post_created            5     2     0    asking a question
+comment_created        10     5     0    posting an answer
+comment_accepted       25    15    20    your answer is best
+comment_upvoted         5     3     2    someone upvoted you
+quiz_easy_pass         10     3     5    quiz score ≥ 60%
+quiz_medium_pass       15     6    12
+quiz_hard_pass         20    10    25
+quiz_expert_pass       30    15    50
+───────────────────────────────────────────────────────────
+"""
+
+from math import floor
+# SQLAlchemy ORM for database context
+from sqlalchemy.orm import Session
+
+
+# ── Rank tiers (driven by REP) ────────────────────────────────────────────────
+
+# Reputation thresholds for rank badges and icons
+RANK_TIERS = [
+    (5000, "Diamond",  "💎"),
+    (1500, "Platinum", "⚡"),
+    (500,  "Gold",     "🥇"),
+    (100,  "Silver",   "🥈"),
+    (0,    "Bronze",   "🥉"),
+]
+
+# ── Point awards per event ────────────────────────────────────────────────────
+
+# Event name -> (XP amount, REP amount, CP amount)
+EVENTS: dict[str, tuple[int, int, int]] = {
+    #                             XP   REP   CP
+    "post_created":             (  5,   2,   0),
+    "comment_created":          ( 10,   5,   0),
+    "comment_accepted":         ( 25,  15,  20),
+    "comment_upvoted":          (  5,   3,   2),
+    "quiz_easy_pass":           ( 10,   3,   5),
+    "quiz_medium_pass":         ( 15,   6,  12),
+    "quiz_hard_pass":           ( 20,  10,  25),
+    "quiz_expert_pass":         ( 30,  15,  50),
+}
+
+# ── Pure helpers ──────────────────────────────────────────────────────────────
+
+def xp_for_level(level: int) -> int:
+    """XP required to advance from `level` to `level + 1`."""
+    return max(1, floor(100 * (level ** 1.5)))
+
+
+def get_rank(reputation: int) -> dict:
+    """Return rank info (name, icon, min_rep) based on reputation points."""
+    for threshold, name, icon in RANK_TIERS:
+        if reputation >= threshold:
+            return {"name": name, "icon": icon, "min_rep": threshold}
+    return {"name": "Bronze", "icon": "🥉", "min_rep": 0}
+
+
+def next_rank_threshold(reputation: int) -> int | None:
+    """Return the REP needed for the next tier, or None if already Diamond."""
+    for threshold, _, _ in reversed(RANK_TIERS):
+        if reputation < threshold:
+            return threshold
+    return None
+
+
+def quiz_event_name(difficulty: str, score_pct: float) -> str | None:
+    """
+    Map a quiz result to an event name.
+    Returns None if score < 60% (no reward for failing).
+    """
+    # Only reward if score meets 60% threshold
+    if score_pct < 0.60:
+        return None
+    # Map difficulty level to event name
+    mapping = {
+        "easy":   "quiz_easy_pass",
+        "medium": "quiz_medium_pass",
+        "hard":   "quiz_hard_pass",
+        "expert": "quiz_expert_pass",
+    }
+    return mapping.get(difficulty.lower())
+
+
+# ── Main award function ───────────────────────────────────────────────────────
+
+def award_points(user_id, event: str, db: Session) -> dict:
+    """
+    Award XP, REP, and CP to a user for a named event.
+    Handles XP overflow and level-ups automatically.
+    Returns a summary dict; returns {} for unknown events or missing users.
+    """
+    # Local import to avoid circular dependency
+    from app.models.user import User
+
+    # Return empty dict for invalid event
+    if event not in EVENTS:
+        return {}
+
+    # Get point amounts for this event
+    xp_amount, rep_amount, cp_amount = EVENTS[event]
+
+    # Fetch user from database
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        return {}
+
+    # Track number of levels gained for response
+    levels_gained = 0
+
+    # ── XP + level-up loop ────────────────────────────────────────────────
+    # Increment both lifetime and current session XP
+    user.xp_total   = (user.xp_total   or 0) + xp_amount
+    user.xp_current = (user.xp_current or 0) + xp_amount
+
+    # Check for level-ups: if current XP >= next level requirement, advance
+    while True:
+        needed = xp_for_level(user.level or 1)
+        if user.xp_current >= needed:
+            # Subtract used XP and move to next level
+            user.xp_current -= needed
+            user.level       = (user.level or 1) + 1
+            levels_gained   += 1
+        else:
+            break
+
+    # ── REP (floor = 0) ───────────────────────────────────────────────────
+    # Reputation increases based on contribution quality
+    user.reputation = max(0, (user.reputation or 0) + rep_amount)
+
+    # ── CP (floor = 0) ────────────────────────────────────────────────────
+    # Challenge Points for competitive activities
+    user.cp_total = max(0, (user.cp_total or 0) + cp_amount)
+
+    # Persist changes to database
+    db.commit()
+
+    # Return comprehensive summary of all changes
+    return {
+        "event":         event,
+        "xp_gained":     xp_amount,
+        "rep_gained":    rep_amount,
+        "cp_gained":     cp_amount,
+        "leveled_up":    levels_gained > 0,
+        "levels_gained": levels_gained,
+        "new_level":     user.level,
+        "new_xp":        user.xp_current,
+        "new_rep":       user.reputation,
+        "new_cp":        user.cp_total,
+        "new_rank":      get_rank(user.reputation),
+    }# app/core/storage_service.py
+from functools import lru_cache
+from supabase import create_client, Client
+from app.core.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB
+EXTENSION_MAP = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+VALID_BUCKETS = {"post-images", "avatars"}
+
+
+@lru_cache(maxsize=1)
+def get_storage_client() -> Client:
+    """
+    Returns a singleton Supabase client initialized with the service role key.
+    This client bypasses RLS and is safe ONLY for server-side use.
+    Never pass this client or its key to frontend code.
+    """
+    return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+
+def ensure_bucket_exists(bucket_name: str, public: bool = True) -> None:
+    """
+    Idempotently ensure a storage bucket exists with correct visibility.
+    Called once per upload rather than at startup, since bucket creation
+    is cheap and avoids needing a lifespan hook.
+    """
+    client = get_storage_client()
+    try:
+        existing = client.storage.list_buckets()
+        existing_names = {b["name"] for b in (existing or [])}
+        if bucket_name not in existing_names:
+            client.storage.create_bucket(bucket_name, options={"public": public})
+    except Exception as e:
+        # Non-fatal: bucket may already exist or another instance created it
+        # Log but don't crash — the upload attempt will surface the real error
+        print(f"[storage] ensure_bucket_exists warning for '{bucket_name}': {e}")
+
+
+def upload_file(bucket_name: str, filename: str, data: bytes, content_type: str) -> str:
+    """
+    Upload bytes to Supabase Storage and return the public URL.
+    Raises ValueError for invalid inputs, RuntimeError for upload failures.
+    """
+    if bucket_name not in VALID_BUCKETS:
+        raise ValueError(f"Invalid bucket '{bucket_name}'. Must be one of: {VALID_BUCKETS}")
+    if content_type not in ALLOWED_IMAGE_TYPES:
+        raise ValueError(f"Unsupported content type '{content_type}'")
+    if len(data) > MAX_FILE_SIZE:
+        raise ValueError(f"File too large: {len(data)} bytes (max {MAX_FILE_SIZE})")
+
+    ensure_bucket_exists(bucket_name, public=True)
+    client = get_storage_client()
+
+    try:
+        client.storage.from_(bucket_name).upload(
+            filename,
+            data,
+            file_options={"content-type": content_type, "upsert": "true"},
+        )
+    except Exception as e:
+        raise RuntimeError(f"Storage upload failed: {e}") from e
+
+    return client.storage.from_(bucket_name).get_public_url(filename)# SQLAlchemy declarative base for all ORM models
+from sqlalchemy.orm import declarative_base
+
+# Base class that all models inherit from
+Base = declarative_base()# Database initialization and table creation
+
+from app.db.session import engine
+from app.db.base import Base
+
+# Import ALL models so SQLAlchemy registers their metadata before create_all
+# Without these imports, tables won't be created
+from app.models.user import User          # noqa: F401
+from app.models.category import Category  # noqa: F401
+from app.models.post import Post          # noqa: F401
+from app.models.comment import Comment    # noqa: F401
+from app.models.quiz import Quiz          # noqa: F401
+from app.models.admin import Admin        # noqa: F401
+from app.models.friendship import Friendship  # noqa: F401
+from app.models.assets import Asset       # noqa: F401
+
+
+def init_db() -> None:
+    """Create all tables defined in models if they don't already exist."""
+    Base.metadata.create_all(bind=engine)
+    print("Database tables created/verified successfully.")
+
+
+if __name__ == "__main__":
+    init_db()# Database session configuration and management
+
+# SQLAlchemy core and ORM imports
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.pool import NullPool
+from typing import Generator
+
+# Import database URL from configuration
+from app.core.config import DATABASE_URL
+
+# Create SQLAlchemy engine with NullPool to avoid prepared statement issues
+engine = create_engine(
+    DATABASE_URL,
+    poolclass=NullPool,  # No connection pooling
+    connect_args={
+        "prepare_threshold": None,  # Disable prepared statements for psycopg3
+    } if "postgresql" in DATABASE_URL else {},
+    echo=False,  # Set to True for SQL query logging
+)
+
+# Create session factory bound to our engine
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+def get_db() -> Generator[Session, None, None]:
+    """
+    FastAPI dependency for getting database sessions.
+    Automatically handles cleanup and closing of connections.
+    """
+    db = SessionLocal()
+    try:
+        # Provide session to the endpoint
+        yield db
+    finally:
+        # Always close the session after use
+        db.close()# Context manager for app lifecycle management
+from contextlib import asynccontextmanager
+# FastAPI web framework imports
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+# ASGI server
+import uvicorn
+
+# Import database engine and route modules
+from app.db.session import engine
+from app.api.routes import homepage, auth, profile
+from app.api.routes import posts, categories, comments
+from app.api.routes import upload, leaderboard, quiz_submission
+from app.db.init_db import init_db
+
+
+# Manage app startup and shutdown operations
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Execute on startup: initialize the database
+    print("🚀 Starting Nusa CoNEX API...")
+    init_db()
+    print("✅ Database initialized")
+    # Entry point for shutdown operations (resume after yield)
+    yield
+    # Execute on shutdown: clean up database connections
+    print("👋 Shutting down...")
+    engine.dispose()
+
+
+# Create FastAPI application instance with metadata
+app = FastAPI(
+    title="Nusa CoNEX API",
+    description="Backend API for Nusa CoNEX platform",
+    version="2.0.0",
+    lifespan=lifespan,  # Register startup/shutdown handlers
+)
+
+# Add CORS middleware to allow requests from frontend clients
+app.add_middleware(
+    CORSMiddleware,
+    # Allow both localhost development servers
+    allow_origins=["http://localhost:8080", "http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all HTTP methods
+    allow_headers=["*"],  # Allow all headers
+)
+
+# Register all API route modules with their prefixes and tags
+app.include_router(homepage.router,          prefix="/homepage",    tags=["Homepage"])
+app.include_router(auth.router,              prefix="/auth",        tags=["Authentication"])
+app.include_router(profile.router,           prefix="/profile",     tags=["Profile"])
+app.include_router(posts.router,             prefix="/posts",       tags=["Posts"])
+app.include_router(categories.router,        prefix="/categories",  tags=["Categories"])
+app.include_router(comments.router,                                 tags=["Comments"])
+app.include_router(upload.router,            prefix="/upload",      tags=["Upload"])
+app.include_router(leaderboard.router,       prefix="/leaderboard", tags=["Leaderboard"])
+app.include_router(quiz_submission.router,                          tags=["Quizzes"])
+
+
+# Root endpoint - welcome message
+@app.get("/")
+def root():
+    return {"message": "Welcome to Nusa CoNEX API", "version": "2.0.0", "docs": "/docs"}
+
+
+# Health check endpoint - used by load balancers/monitoring
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
+
+
+# Entry point for running the server with auto-reload on code changes
+if __name__ == "__main__":
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)from app.models.user import User
+from app.models.category import Category
+from app.models.post import Post
+from app.models.comment import Comment
+from app.models.admin import Admin
+from app.models.assets import Asset
+from app.models.friendship import Friendship, FriendshipStatus
+from app.models.quiz import Quiz
+
+__all__ = [
+    "Admin",
+    "Asset",
+    "Category",
+    "Comment",
+    "Friendship",
+    "FriendshipStatus",
+    "Post",
+    "Quiz",
+    "User",
+]"""Admin model for Supabase database."""
+# Standard library imports
+from datetime import datetime
+import uuid
+
+# SQLAlchemy imports
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+
+# Import declarative base
+from app.db.base import Base
+
+
+class Admin(Base):
+    """Administrative account linked to a user."""
+
+    __tablename__ = "admins"
+
+    # Admin profile unique identifier
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+        index=True,
+    )
+    # Reference to the user account (one-to-one relationship)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        unique=True,  # Only one admin profile per user
+        nullable=False,
+        index=True,
+    )
+    # Admin role (e.g., "admin", "moderator", "editor")
+    role = Column(
+        String(50),
+        default="admin",
+        nullable=False,
+        index=True,
+    )
+    # Whether this is a super admin with full permissions
+    is_super_admin = Column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+    # When admin privileges were granted
+    created_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
+    )
+    # When admin profile was last updated
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    # ── Relationships ──────────────────────────────────────────────────────────
+    # Back reference to the user account
+    user = relationship("User", back_populates="admin_profile")
+# Asset model for tracking post attachments
+from datetime import datetime
+import uuid
+
+# SQLAlchemy imports
+from sqlalchemy import Column, DateTime, ForeignKey, String
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+
+# Import declarative base
+from app.db.base import Base
+
+
+class Asset(Base):
+    """Asset model for tracking files attached to posts."""
+    __tablename__ = "assets"
+
+    # Asset unique identifier
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    # Reference to the post this asset is attached to
+    post_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("posts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+    # URL or file path to the stored asset
+    file_url = Column(String, nullable=False)
+    # MIME type of the file (e.g., "image/png", "application/pdf")
+    media_type = Column(String, nullable=False, index=True)
+    # When the asset was uploaded
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # ── Relationships ──────────────────────────────────────────────────────────
+    # The post this asset belongs to
+    post = relationship("Post", back_populates="assets")# Category model for organizing posts
+import uuid
+from datetime import datetime
+
+# SQLAlchemy imports
+from sqlalchemy import Column, DateTime, String, Text
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+
+# Import declarative base
+from app.db.base import Base
+
+
+class Category(Base):
+    """Category model for organizing posts into topics and subjects."""
+    __tablename__ = "categories"
+
+    # Category unique identifier
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    # Human-readable name (must be unique)
+    name = Column(String(100), unique=True, nullable=False, index=True)
+    # URL-friendly slug (e.g., "python-questions")
+    slug = Column(String(100), unique=True, nullable=False, index=True)
+    # Longer description of the category
+    description = Column(Text, nullable=True)
+    # Unicode emoji or icon representing the category
+    icon = Column(String(50), nullable=True)
+    # When category was created
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # ── Relationships ──────────────────────────────────────────────────────────
+    # All posts within this category
+    posts = relationship("Post", back_populates="category")# Comment model for answers and discussions
+import uuid
+from datetime import datetime
+
+# SQLAlchemy imports
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Text
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+
+# Import declarative base
+from app.db.base import Base
+
+
+class Comment(Base):
+    """Comment model representing answers, replies, or discussions on posts."""
+    __tablename__ = "comments"
+
+    # Comment unique identifier
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    # Reference to the post this comment is on
+    post_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("posts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # User who created this comment
+    author_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Comment text content
+    content = Column(Text, nullable=False)
+    # Whether this comment is marked as the accepted/best answer
+    is_accepted = Column(Boolean, default=False, nullable=False)
+    # When the comment was created
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # When the comment was last updated
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    # ── Relationships ──────────────────────────────────────────────────────────
+    # The post this comment belongs to
+    post = relationship("Post", back_populates="comments")
+    # The user who authored this comment
+    author = relationship("User", back_populates="comments")"""Friendship model for managing user connections."""
+# Standard library imports
+from datetime import datetime
+import enum
+import uuid
+
+# SQLAlchemy imports
+from sqlalchemy import Column, DateTime, Enum, UniqueConstraint
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import ForeignKey
+from sqlalchemy.orm import relationship
+
+# Import declarative base
+from app.db.base import Base
+
+
+class FriendshipStatus(str, enum.Enum):
+    """Enum for friendship request and connection status."""
+    PENDING = "pending"   # Request sent, awaiting response
+    ACCEPTED = "accepted" # Both users connected
+    BLOCKED = "blocked"   # Connection blocked
+    REJECTED = "rejected" # Request was rejected
+
+
+class Friendship(Base):
+    """Friendship/connection between users."""
+    
+    __tablename__ = "friendships"
+
+    # Friendship record unique identifier
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    # User who initiated the friend request
+    requester_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+    # User who receives the friend request
+    addressee_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+    # Current status of the friendship (pending, accepted, blocked, rejected)
+    status = Column(
+        Enum(FriendshipStatus),
+        default=FriendshipStatus.PENDING,
+        nullable=False,
+        index=True
+    )
+    # When the friendship record was created
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # When the friendship status was last updated
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False
+    )
+
+    # ── Relationships ──────────────────────────────────────────────────────────
+    # User who sent the request
+    requester = relationship("User", foreign_keys=[requester_id])
+    # User who received the request
+    addressee = relationship("User", foreign_keys=[addressee_id])
+
+    # ── Constraints ────────────────────────────────────────────────────────────
+    # Ensure each unique pair of users can only have one friendship record
+    __table_args__ = (
+        UniqueConstraint("requester_id", "addressee_id", name="unique_friendship"),
+    )# Post model for blog posts and questions
+from datetime import datetime
+import uuid
+
+# SQLAlchemy imports
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+
+# Import declarative base
+from app.db.base import Base
+
+
+class Post(Base):
+    """Post model representing blog posts, questions, or articles."""
+
+    __tablename__ = "posts"
+
+    # Core fields
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    # Author cascade delete if user is removed
+    author_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    # Category can be null (uncategorized posts allowed)
+    category_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("categories.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    title = Column(String(500), nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    image_url = Column(String(500), nullable=True)  # Thumbnail or featured image
+    is_published = Column(Boolean, default=False, nullable=False, index=True)
+    excerpt = Column(Text, nullable=True)  # Short summary for preview
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    # ── Relationships ──────────────────────────────────────────────────────────
+    # Post author
+    author = relationship("User", back_populates="posts")
+    # Category this post belongs to
+    category = relationship("Category", back_populates="posts")
+    # Attached files (images, PDFs, etc.)
+    assets = relationship("Asset", back_populates="post", cascade="all, delete-orphan")
+    # Comments and answers on this post
+    comments = relationship("Comment", back_populates="post", cascade="all, delete-orphan")"""Quiz model for Supabase database."""
+# Standard library imports
+from datetime import datetime
+import uuid
+
+# SQLAlchemy imports
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+
+# Import declarative base
+from app.db.base import Base
+
+
+class Quiz(Base):
+    """Quiz/assessment model for creating quizzes and tracking attempts."""
+    
+    __tablename__ = "quizzes"
+
+    # Quiz unique identifier
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    # User who created this quiz
+    author_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+    # Quiz title
+    title = Column(String(500), nullable=False, index=True)
+    # Optional longer description
+    description = Column(Text, nullable=True)
+    # Whether the quiz is publicly available
+    is_public = Column(Boolean, default=False, nullable=False, index=True)
+    # When this quiz attempt started
+    started_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # When the quiz was completed (null if not finished)
+    finished_at = Column(DateTime, nullable=True)  
+    # Time spent on the quiz in seconds
+    time_used_seconds = Column(Integer, nullable=True)  
+    # Minimum score percentage needed to pass
+    passing_score = Column(Integer, default=70, nullable=False)  # Percentage
+    # -1 for unlimited attempts, otherwise max number
+    attempts_allowed = Column(Integer, default=-1, nullable=False)  # -1 for unlimited
+    # Show correct answers after completion
+    show_answers = Column(Boolean, default=True, nullable=False)
+    # Randomize question order for each attempt
+    randomize_questions = Column(Boolean, default=False, nullable=False)
+    # When the quiz was created
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    # When the quiz was last updated
+    updated_at = Column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
+    # ── Relationships ──────────────────────────────────────────────────────────
+    # User who authored this quiz
+    author = relationship("User", back_populates="quizzes")
+    # Note: QuizQuestion relationship removed - not currently implemented"""
+app/models/upvote.py
+
+Tracks which user upvoted which comment.
+One row = one vote. Deleting the row = un-vote.
+"""
+# Standard library imports
+import uuid
+from datetime import datetime
+
+# SQLAlchemy imports
+from sqlalchemy import Column, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+
+# Import declarative base
+from app.db.base import Base
+
+
+class Upvote(Base):
+    """Upvote model tracking votes on comments."""
+    __tablename__ = "upvotes"
+
+    # Upvote record unique identifier
+    id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    # User who cast the upvote
+    user_id    = Column(UUID(as_uuid=True), ForeignKey("users.id",    ondelete="CASCADE"), nullable=False, index=True)
+    # Comment being upvoted
+    comment_id = Column(UUID(as_uuid=True), ForeignKey("comments.id", ondelete="CASCADE"), nullable=False, index=True)
+    # When the upvote was created
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # ── Constraints ────────────────────────────────────────────────────────────
+    # One user can upvote a comment only once (prevent duplicate votes)
+    __table_args__ = (
+        UniqueConstraint("user_id", "comment_id", name="uq_upvote_user_comment"),
+    )
+
+    # ── Relationships ──────────────────────────────────────────────────────────
+    # The user who cast the vote
+    voter   = relationship("User",    foreign_keys=[user_id])
+    # The comment being voted on
+    comment = relationship("Comment", foreign_keys=[comment_id])"""User model — includes gamification columns."""
+# Standard library imports
+from datetime import datetime
+import uuid
+
+# SQLAlchemy imports for column types and relationships
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
+
+# Import declarative base for ORM
+from app.db.base import Base
+
+
+class User(Base):
+    """
+    User model representing platform users with authentication and gamification data.
+    """
+    __tablename__ = "users"
+
+    # ── Authentication & Profile ────────────────────────────────────────────
+    id            = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    real_name     = Column(String(255), nullable=True, index=True)
+    username      = Column(String(50),  unique=True, nullable=False, index=True)
+    email         = Column(String(255), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    is_active     = Column(Boolean, default=False, nullable=False)
+    subscription  = Column(String(50), default="Free", nullable=False)
+    bio           = Column(Text, default="", nullable=False)
+    avatar_url    = Column(String(500), nullable=True)
+    created_at    = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at    = Column(DateTime, default=datetime.utcnow,
+                           onupdate=datetime.utcnow, nullable=False)
+
+    # ── Gamification ──────────────────────────────────────────────────────────
+    xp_total    = Column(Integer, default=0, nullable=False)  # lifetime XP (never resets)
+    xp_current  = Column(Integer, default=0, nullable=False)  # XP within current level
+    level       = Column(Integer, default=1, nullable=False)  # current level
+    reputation  = Column(Integer, default=0, nullable=False)  # drives rank tier
+    cp_total    = Column(Integer, default=0, nullable=False)  # challenge points (competitive)
+
+    # ── Relationships ───────────────────────────────────────────────────────────
+    # User's posts with cascade delete for data cleanup
+    posts         = relationship("Post",    back_populates="author", cascade="all, delete-orphan")
+    # User's quizzes created
+    quizzes       = relationship("Quiz",    back_populates="author", cascade="all, delete-orphan")
+    # User's comments on posts
+    comments      = relationship("Comment", back_populates="author", cascade="all, delete-orphan")
+    # Optional admin profile
+    admin_profile = relationship("Admin",   back_populates="user",
+                                 uselist=False, cascade="all, delete-orphan")

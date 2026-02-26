@@ -1,16 +1,22 @@
+# Homepage routes for displaying feed, posts, and platform statistics
 from fastapi import APIRouter, Query, Depends
 from pydantic import BaseModel
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
+# Import database session dependency and models
 from app.db.session import get_db
 from app.models.post import Post
 
+# Create router for homepage endpoints
 router = APIRouter()
 
 
+# ── Response Models ────────────────────────────────────────────────────────────
+
 class HomepagePostResponse(BaseModel):
+    """Schema for post items shown on homepage."""
     id: str
     title: str
     description: Optional[str] = None
@@ -23,12 +29,14 @@ class HomepagePostResponse(BaseModel):
 
 
 class HomepageStats(BaseModel):
+    """Schema for platform statistics."""
     total_quizzes: int
     published_quizzes: int
     draft_quizzes: int
 
 
 class HomepageResponse(BaseModel):
+    """Schema for full homepage response."""
     title: str
     description: str
     status: str
@@ -37,17 +45,21 @@ class HomepageResponse(BaseModel):
 
 
 class HomepageFeedResponse(BaseModel):
+    """Schema for homepage feed (latest + popular posts)."""
     status: str
     latest_post: Optional[HomepagePostResponse]
     popular_posts: List[HomepagePostResponse]
 
 
+# ── Helper Functions ──────────────────────────────────────────────────────────
+
 def _fetch_published_posts(
     db: Session,
     limit: int,
 ) -> List[HomepagePostResponse]:
-    """Fetch published posts using SQLAlchemy."""
+    """Fetch published posts from database, ordered by newest first."""
     try:
+        # Query published posts, ordered by creation date (newest first)
         posts = (
             db.query(Post)
             .filter(Post.is_published == True)
@@ -56,6 +68,7 @@ def _fetch_published_posts(
             .all()
         )
         
+        # Convert to response schema
         return [
             HomepagePostResponse(
                 id=str(post.id),
@@ -73,6 +86,7 @@ def _fetch_published_posts(
 
 
 def _build_homepage_payload() -> HomepageResponse:
+    """Build static homepage payload with platform info."""
     return HomepageResponse(
         title="Dadarzz FIKSI",
         description="Prototype.",
@@ -90,8 +104,11 @@ def _build_homepage_payload() -> HomepageResponse:
     )
 
 
+# ── Endpoints ──────────────────────────────────────────────────────────────────
+
 @router.get("/health")
 def homepage_health() -> dict[str, str]:
+    """Health check endpoint."""
     return {"status": "homepage router ready"}
 
 
@@ -100,8 +117,12 @@ def get_homepage(
     popular_limit: int = Query(default=5, ge=1, le=20),
     db: Session = Depends(get_db),
 ) -> HomepageFeedResponse:
+    """Get homepage feed with latest and popular posts."""
+    # Fetch posts (one extra to separate latest from popular)
     posts = _fetch_published_posts(db=db, limit=max(popular_limit, 1) + 1)
+    # First post is the latest
     latest_post = posts[0] if posts else None
+    # Remaining posts are popular
     popular_posts = posts[1 : popular_limit + 1] if posts else []
 
     return HomepageFeedResponse(
@@ -116,5 +137,5 @@ def get_homepage_posts(
     limit: int = Query(default=10, ge=1, le=50),
     db: Session = Depends(get_db),
 ) -> List[HomepagePostResponse]:
-    """Get all published posts."""
+    """Get all published posts with optional limit."""
     return _fetch_published_posts(db=db, limit=limit)

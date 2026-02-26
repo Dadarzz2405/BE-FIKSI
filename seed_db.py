@@ -1,23 +1,26 @@
 """
 Database seeder with Supabase Storage image upload.
-This will:
+This script performs the following steps:
 1. Upload the Garuda image to Supabase Storage
-2. Create mock users
+2. Create mock users (with optional Supabase Auth sync)
 3. Create mock posts using the uploaded image
 """
+# Standard library imports
 import os
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta
+# SQLAlchemy ORM
 from sqlalchemy.orm import Session
 from typing import Optional
 
+# Database imports
 from app.db.session import SessionLocal, engine
 from app.models.user import User
 from app.models.post import Post
 from app.core.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 
-# Import Supabase client for storage
+# Import Supabase client for storage operations
 from supabase import create_client
 
 
@@ -27,17 +30,19 @@ def _provision_supabase_auth_user(
     password: str
 ) -> tuple[Optional[str], bool]:
     """
-    Create/update a Supabase Auth user for seeded credentials.
+    Create/update a Supabase Auth user for seeded test credentials.
+    This allows seeded test users to login via Supabase authentication.
 
     Returns:
-        (auth_user_id, is_login_ready)
+        (auth_user_id, is_login_ready) - auth ID and login readiness status
     """
     try:
+        # Create a new Supabase auth user with confirmed email
         response = supabase_client.auth.admin.create_user(
             {
                 "email": email,
                 "password": password,
-                "email_confirm": True,
+                "email_confirm": True,  # Auto-confirm email for testing
             }
         )
         auth_user = getattr(response, "user", None)
@@ -53,14 +58,15 @@ def upload_image_to_supabase(image_path: str, bucket_name: str = "post-images") 
     Upload image to Supabase Storage and return public URL.
     
     Args:
-        image_path: Path to the image file
+        image_path: Path to the image file local filesystem
         bucket_name: Name of the Supabase storage bucket
     
     Returns:
-        Public URL of the uploaded image
+        Public URL of the uploaded image for use in posts
     """
     print(f"\n📤 Uploading image to Supabase Storage...")
     
+    # Check if Supabase credentials are configured
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         print("⚠️  Supabase credentials not found!")
         print("Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in your environment variables.")
@@ -72,19 +78,19 @@ def upload_image_to_supabase(image_path: str, bucket_name: str = "post-images") 
         print("🔑 Using service role key for admin access...")
         supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
         
-        # Check if image file exists
+        # Verify local image file exists
         if not os.path.exists(image_path):
             print(f"❌ Image file not found: {image_path}")
             return "https://i.ibb.co.com/Kx9bs0zv/Garuda-Icon-Featuring-Networked-Wings-and-Typography-2.png"
         
-        # Read the image file
+        # Read the image file from disk
         with open(image_path, 'rb') as f:
             image_data = f.read()
         
-        # Get file name
+        # Get file name from path
         file_name = "garuda_icon.png"
         
-        # Check if bucket exists, create if not
+        # Check if bucket exists, create if necessary
         try:
             buckets = supabase.storage.list_buckets()
             bucket_exists = any(b['name'] == bucket_name for b in buckets)
@@ -102,20 +108,20 @@ def upload_image_to_supabase(image_path: str, bucket_name: str = "post-images") 
         # Upload the image
         print(f"⬆️  Uploading {file_name}...")
         
-        # Delete if exists (to allow re-upload)
+        # Delete if exists (allows re-upload)
         try:
             supabase.storage.from_(bucket_name).remove([file_name])
         except:
             pass  # File might not exist yet
         
-        # Upload the file
+        # Upload the file to storage
         result = supabase.storage.from_(bucket_name).upload(
             file_name,
             image_data,
             file_options={"content-type": "image/png"}
         )
         
-        # Get public URL
+        # Get public URL for the uploaded file
         public_url = supabase.storage.from_(bucket_name).get_public_url(file_name)
         
         print(f"✅ Image uploaded successfully!")
@@ -130,14 +136,18 @@ def upload_image_to_supabase(image_path: str, bucket_name: str = "post-images") 
 
 
 def create_mock_users(db: Session) -> tuple[list[User], int]:
-    """Create mock users."""
+    """
+    Create mock user accounts for testing.
+    These can optionally be synced to Supabase Auth for login testing.
+    """
     print("\n👥 Creating mock users...")
     
+    # Test user data - note the bcrypt-hashed password for "password123"
     users_data = [
         {
             "username": "admin_nusa",
             "email": "admin@nusaconex.com",
-            "plain_password": "password123",
+            "plain_password": "password123",  # Used for Supabase Auth sync
             "real_name": "Admin Nusa CoNEX",
             "hashed_password": "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5GyYzNb8Ow1u2",  # "password123"
             "is_active": True,
@@ -173,6 +183,7 @@ def create_mock_users(db: Session) -> tuple[list[User], int]:
     login_ready_count = 0
     supabase_admin = None
 
+    # Try to initialize Supabase admin client for auth sync
     if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
         try:
             supabase_admin = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
@@ -180,10 +191,12 @@ def create_mock_users(db: Session) -> tuple[list[User], int]:
         except Exception as e:
             print(f"⚠️  Supabase Auth sync disabled: {e}")
 
+    # Create each user in both database and Supabase Auth (if available)
     for user_data in users_data:
         user_payload = dict(user_data)
         seed_password = user_payload.pop("plain_password")
 
+        # Attempt to create auth user in Supabase
         if supabase_admin:
             auth_user_id, is_login_ready = _provision_supabase_auth_user(
                 supabase_admin,
@@ -191,16 +204,19 @@ def create_mock_users(db: Session) -> tuple[list[User], int]:
                 password=seed_password,
             )
             if auth_user_id:
-                user_payload["id"] = auth_user_id
+                user_payload["id"] = auth_user_id  # Use Supabase auth ID
                 user_payload["hashed_password"] = ""
             if is_login_ready:
                 login_ready_count += 1
 
+        # Create user in database
         user = User(**user_payload)
         db.add(user)
         users.append(user)
     
+    # Commit users to database
     db.commit()
+    # Refresh to get generated IDs
     for user in users:
         db.refresh(user)
     
@@ -216,6 +232,7 @@ def create_test_posts(db: Session, users: list[User], image_url: str) -> list[Po
     """Create test posts with the uploaded Garuda image."""
     print("\n📝 Creating test posts...")
     
+    # Test post data
     posts_data = [
         {
             "title": "Test Post 1: Welcome to Nusa CoNEX",
@@ -257,15 +274,16 @@ This post also includes the Garuda logo image to show how media is integrated in
     
     posts = []
     for i, post_data in enumerate(posts_data):
-        # Assign posts to users round-robin
+        # Assign posts to users in round-robin fashion
         author = users[i % len(users)]
         
-        # Create posts with staggered timestamps
+        # Create posts with staggered timestamps (older first)
         created_at = datetime.utcnow() - timedelta(days=len(posts_data) - i, hours=i * 2)
         
+        # Create post with uploaded image
         post = Post(
             **post_data,
-            image_url=image_url,  # ✅ FIXED: Now using correct field name
+            image_url=image_url,  # Use uploaded Garuda image
             author_id=author.id,
             created_at=created_at,
             updated_at=created_at
@@ -273,10 +291,13 @@ This post also includes the Garuda logo image to show how media is integrated in
         db.add(post)
         posts.append(post)
     
+    # Commit posts to database
     db.commit()
+    # Refresh to get generated IDs
     for post in posts:
         db.refresh(post)
     
+    # Calculate statistics
     published_count = sum(1 for p in posts if p.is_published)
     draft_count = len(posts) - published_count
     
@@ -285,25 +306,25 @@ This post also includes the Garuda logo image to show how media is integrated in
 
 
 def seed_database(image_path: str = "garuda_icon.png"):
-    """Main seeder function."""
+    """Main orchestration function for database seeding."""
     print("\n" + "="*70)
     print("🌱 NUSA CONEX DATABASE SEEDER")
     print("="*70)
     
-    # Create a fresh session
+    # Create a fresh database session
     db = SessionLocal()
     
     try:
         # Step 1: Upload image to Supabase Storage
         image_url = upload_image_to_supabase(image_path)
         
-        # Step 2: Create users
+        # Step 2: Create mock users in database and Supabase Auth
         users, login_ready_count = create_mock_users(db)
         
-        # Step 3: Create posts
+        # Step 3: Create test posts with the uploaded image
         posts = create_test_posts(db, users, image_url)
         
-        # Summary
+        # Print completion summary
         print("\n" + "="*70)
         print("✅ DATABASE SEEDING COMPLETED!")
         print("="*70)
@@ -327,20 +348,24 @@ def seed_database(image_path: str = "garuda_icon.png"):
         print("="*70 + "\n")
         
     except Exception as e:
+        # Rollback on error
         db.rollback()
         print(f"\n❌ Error seeding database: {e}")
         import traceback
         traceback.print_exc()
         raise
     finally:
+        # Clean up resources
         db.close()
-        # Clean up connections
+        # Clean up database connections
         engine.dispose()
 
 
+# Script entry point
 if __name__ == "__main__":
     import argparse
     
+    # Parse command line arguments
     parser = argparse.ArgumentParser(description="Seed Nusa CoNEX database")
     parser.add_argument(
         "--image",
@@ -350,6 +375,7 @@ if __name__ == "__main__":
     
     args = parser.parse_args()
     
+    # Resolve image path relative to this script
     BASE_DIR = Path(__file__).resolve().parent
     image_path = BASE_DIR / args.image
     seed_database(image_path=str(image_path))

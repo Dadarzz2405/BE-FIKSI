@@ -6,6 +6,7 @@ from app.models.admin import Admin
 from app.models.assets import Asset
 from app.models.friendship import Friendship, FriendshipStatus
 from app.models.quiz import Quiz
+from app.models.upvote import Upvote
 
 __all__ = [
     "Admin",
@@ -16,5 +17,6 @@ __all__ = [
     "FriendshipStatus",
     "Post",
     "Quiz",
+    "Upvote",
     "User",
 ]
