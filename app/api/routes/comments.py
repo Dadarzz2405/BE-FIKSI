@@ -110,14 +110,15 @@ def _comment_to_response(
     db: Session,
     viewer_id: Optional[str] = None,
 ) -> CommentResponse:
+    from app.models.upvote import Upvote
+
     # Count upvotes from the upvotes table
-    upvote_count = db.query(func.count()).filter(
-        __import__("app.models.upvote", fromlist=["Upvote"]).Upvote.comment_id == c.id
+    upvote_count = db.query(func.count(Upvote.id)).filter(
+        Upvote.comment_id == c.id
     ).scalar() or 0
 
     has_upvoted = False
     if viewer_id:
-        from app.models.upvote import Upvote
         has_upvoted = db.query(Upvote).filter(
             Upvote.comment_id == c.id,
             Upvote.user_id    == viewer_id,

@@ -7,8 +7,13 @@ from app.models.assets import Asset
 from app.models.friendship import Friendship, FriendshipStatus
 from app.models.quiz import Quiz
 from app.models.upvote import Upvote
+from app.models.academic_category import AcademicCategory
+from app.models.subject import Subject
+from app.models.subject_rank import SubjectRank
+from app.models.user_subject_progress import UserSubjectProgress
 
 __all__ = [
+    "AcademicCategory",
     "Admin",
     "Asset",
     "Category",
@@ -17,6 +22,9 @@ __all__ = [
     "FriendshipStatus",
     "Post",
     "Quiz",
+    "Subject",
+    "SubjectRank",
     "Upvote",
     "User",
+    "UserSubjectProgress",
 ]

@@ -14,6 +14,10 @@ from app.models.quiz import Quiz          # noqa: F401
 from app.models.admin import Admin        # noqa: F401
 from app.models.friendship import Friendship  # noqa: F401
 from app.models.assets import Asset       # noqa: F401
+from app.models.academic_category import AcademicCategory  # noqa: F401
+from app.models.subject import Subject                     # noqa: F401
+from app.models.subject_rank import SubjectRank            # noqa: F401
+from app.models.user_subject_progress import UserSubjectProgress  # noqa: F401
 
 
 def init_db() -> None:

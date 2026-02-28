@@ -65,6 +65,8 @@ def toggle_upvote(
     post = db.query(Post).filter(Post.id == post_id, Post.is_published == True).first()
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
+    if str(post.author_id) == str(current_user.id):
+        raise HTTPException(status_code=400, detail="You cannot upvote your own post")
 
     existing = (
         db.query(Upvote)

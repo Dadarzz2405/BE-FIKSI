@@ -25,9 +25,14 @@ from app.models.quiz import Quiz
 from app.models.admin import Admin
 from app.models.friendship import Friendship
 from app.models.assets import Asset
+from app.models.academic_category import AcademicCategory
+from app.models.subject import Subject
+from app.models.subject_rank import SubjectRank
+from app.models.user_subject_progress import UserSubjectProgress
 
-# Import seeding function
+# Import seeding functions
 from seed_db import seed_database
+from seed_subjects import seed_subjects
 
 
 def reset_database():
@@ -97,6 +102,7 @@ def setup_database(seed: bool = True, image_path: str = "garuda_icon.png", reset
         # Step 3: Seed data (optional)
         if seed:
             seed_database(image_path=image_path)
+            seed_subjects()
         else:
             print("\n⚠️  Skipping data seeding")
             print("Run 'python seed_db.py' to seed data later")

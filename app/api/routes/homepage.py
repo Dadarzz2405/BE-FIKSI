@@ -75,7 +75,7 @@ def _fetch_published_posts(
                 title=post.title,
                 description=post.excerpt,
                 created_at=post.created_at.isoformat(),
-                author=str(post.author_id) if post.author_id else None,
+                author=post.author.username if post.author else None,
                 image_url=post.image_url,
             )
             for post in posts

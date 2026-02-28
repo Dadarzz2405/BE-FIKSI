@@ -153,3 +153,120 @@ def award_points(user_id, event: str, db: Session) -> dict:
         "new_cp":        user.cp_total,
         "new_rank":      get_rank(user.cp_total),
     }
+
+
+# ── Per-subject helpers ───────────────────────────────────────────────────────
+
+def get_subject_rank(rp_total: int, subject_id, db: Session) -> dict:
+    """
+    Look up the rank tier for a given RP total within a specific subject.
+    Falls back to hardcoded RANK_TIERS if no subject-specific ranks exist.
+    """
+    from app.models.subject_rank import SubjectRank
+
+    ranks = (
+        db.query(SubjectRank)
+        .filter(SubjectRank.subject_id == subject_id)
+        .order_by(SubjectRank.min_rp.desc())
+        .all()
+    )
+    if ranks:
+        for r in ranks:
+            if rp_total >= r.min_rp:
+                return {"name": r.name, "icon": r.icon, "min_rp": r.min_rp}
+        # If nothing matched, return the lowest tier
+        lowest = ranks[-1]
+        return {"name": lowest.name, "icon": lowest.icon, "min_rp": lowest.min_rp}
+
+    # Fallback to global rank tiers (using RP as if it were CP)
+    return get_rank(rp_total)
+
+
+def award_subject_points(user_id, subject_id, event: str, db: Session) -> dict:
+    """
+    Award XP and RP to a user for a specific subject, plus global rollup.
+    - Subject progress: XP + RP (rank points drive per-subject rank)
+    - Global User: XP + REP + CP (unchanged behavior)
+    Returns a combined summary dict.
+    """
+    from app.models.user import User
+    from app.models.user_subject_progress import UserSubjectProgress
+
+    if event not in EVENTS:
+        return {}
+
+    xp_amount, rep_amount, cp_amount = EVENTS[event]
+
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        return {}
+
+    # ── Global rollup (same as award_points) ──────────────────────────────
+    levels_gained = 0
+    user.xp_total   = (user.xp_total   or 0) + xp_amount
+    user.xp_current = (user.xp_current or 0) + xp_amount
+
+    while True:
+        needed = xp_for_level(user.level or 1)
+        if user.xp_current >= needed:
+            user.xp_current -= needed
+            user.level       = (user.level or 1) + 1
+            levels_gained   += 1
+        else:
+            break
+
+    user.reputation = max(0, (user.reputation or 0) + rep_amount)
+    user.cp_total   = max(0, (user.cp_total   or 0) + cp_amount)
+
+    # ── Per-subject progress ──────────────────────────────────────────────
+    progress = (
+        db.query(UserSubjectProgress)
+        .filter(
+            UserSubjectProgress.user_id    == user_id,
+            UserSubjectProgress.subject_id == subject_id,
+        )
+        .first()
+    )
+    if not progress:
+        progress = UserSubjectProgress(
+            user_id=user_id,
+            subject_id=subject_id,
+        )
+        db.add(progress)
+
+    subject_levels_gained = 0
+    progress.xp_total   = (progress.xp_total   or 0) + xp_amount
+    progress.xp_current = (progress.xp_current or 0) + xp_amount
+
+    while True:
+        needed = xp_for_level(progress.level or 1)
+        if progress.xp_current >= needed:
+            progress.xp_current -= needed
+            progress.level       = (progress.level or 1) + 1
+            subject_levels_gained += 1
+        else:
+            break
+
+    # RP = XP + REP combined for the subject rank (simple approach)
+    progress.rank_points = (progress.rank_points or 0) + rep_amount + cp_amount
+
+    db.commit()
+
+    return {
+        "event":                event,
+        "xp_gained":            xp_amount,
+        "rep_gained":           rep_amount,
+        "cp_gained":            cp_amount,
+        "leveled_up":           levels_gained > 0,
+        "levels_gained":        levels_gained,
+        "new_level":            user.level,
+        "new_xp":               user.xp_current,
+        "new_rep":              user.reputation,
+        "new_cp":               user.cp_total,
+        "new_rank":             get_rank(user.cp_total),
+        "subject_level":        progress.level,
+        "subject_xp":           progress.xp_current,
+        "subject_rp":           progress.rank_points,
+        "subject_leveled_up":   subject_levels_gained > 0,
+        "subject_rank":         get_subject_rank(progress.rank_points, subject_id, db),
+    }

@@ -49,3 +49,6 @@ class User(Base):
     # Optional admin profile
     admin_profile = relationship("Admin",   back_populates="user",
                                  uselist=False, cascade="all, delete-orphan")
+    # Per-subject XP / level / rank progress
+    subject_progress = relationship("UserSubjectProgress", back_populates="user",
+                                    cascade="all, delete-orphan")

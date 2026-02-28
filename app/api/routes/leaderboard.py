@@ -29,7 +29,7 @@ class LeaderboardEntry(BaseModel):
 def get_leaderboard(
     sort_by: str = Query(
         default="reputation",
-        regex="^(reputation|xp_total|cp_total|level)$",
+        pattern="^(reputation|xp_total|cp_total|level)$",
         description="Sort column: reputation | xp_total | cp_total | level",
     ),
     limit: int = Query(default=20, ge=1, le=50),
@@ -61,8 +61,8 @@ def get_leaderboard(
             xp_total=u.xp_total   or 0,
             reputation=u.reputation or 0,
             cp_total=u.cp_total   or 0,
-            rank_name=get_rank(u.reputation or 0)["name"],
-            rank_icon=get_rank(u.reputation or 0)["icon"],
+            rank_name=get_rank(u.cp_total or 0)["name"],
+            rank_icon=get_rank(u.cp_total or 0)["icon"],
         )
         for i, u in enumerate(users)
     ]
