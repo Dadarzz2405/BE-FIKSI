@@ -20,8 +20,13 @@ from app.db.init_db import init_db
 async def lifespan(app: FastAPI):
     # Execute on startup: initialize the database
     print("🚀 Starting Nusa CoNEX API...")
-    init_db()
-    print("✅ Database initialized")
+    try:
+        init_db()
+        print("✅ Database initialized")
+    except Exception as e:
+        print(f"⚠️  Database initialization skipped or failed: {e}")
+        print("💡 The app will still start, but DB connections might fail until fixed.")
+    
     # Entry point for shutdown operations (resume after yield)
     yield
     # Execute on shutdown: clean up database connections
