@@ -13,6 +13,7 @@ from app.api.routes import homepage, auth, profile
 from app.api.routes import posts, subjects, comments, upvote
 from app.api.routes import upload, leaderboard, quiz_submission
 from app.db.init_db import init_db
+from app.core.config import FRONTEND_URL, APP_ENV
 
 
 # Manage app startup and shutdown operations
@@ -48,6 +49,7 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:8080", 
         "http://localhost:3000",
+        FRONTEND_URL, # Allow the production frontend URL
     ],
     allow_origin_regex=r"https://.*\.vercel\.app", # Allow all Vercel domains (preview & prod)
     allow_credentials=True,
@@ -69,7 +71,7 @@ app.include_router(quiz_submission.router,                          tags=["Quizz
 
 
 # Root endpoint - welcome message
-@app.get("/", methods=["GET", "HEAD"])
+@app.api_route("/", methods=["GET", "HEAD"])
 def root():
     return {"message": "Welcome to Nusa CoNEX API", "version": "2.0.0", "docs": "/docs"}
 
