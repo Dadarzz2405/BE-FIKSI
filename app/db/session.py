@@ -15,6 +15,7 @@ engine = create_engine(
     poolclass=NullPool,  # No connection pooling
     connect_args={
         "prepare_threshold": None,  # Disable prepared statements for psycopg3
+        "connect_timeout": 10,       # Prevent hanging indefinitely on connection
     } if "postgresql" in DATABASE_URL else {},
     echo=False,  # Set to True for SQL query logging
 )

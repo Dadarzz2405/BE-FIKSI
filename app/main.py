@@ -76,4 +76,6 @@ def health():
 
 # Entry point for running the server with auto-reload on code changes
 if __name__ == "__main__":
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=True)
+    from app.core.config import PORT
+    print(f"📡 Server starting on http://0.0.0.0:{PORT}")
+    uvicorn.run("app.main:app", host="0.0.0.0", port=PORT, reload=True)
