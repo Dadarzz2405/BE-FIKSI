@@ -7,9 +7,9 @@ import uuid, mimetypes
 
 from app.db.session import get_db
 from app.models.user import User
-from app.core.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 from app.api.dependencies import get_current_active_user
 from app.core.gamification import xp_for_level, get_rank, next_rank_threshold
+from app.core.storage_service import upload_file
 
 router = APIRouter()
 
@@ -106,8 +106,6 @@ async def upload_profile_photo(
     current_user: User = Depends(get_current_active_user),
     db: Session = Depends(get_db),
 ):
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-        raise HTTPException(status_code=500, detail="Storage not configured")
     content_type = file.content_type or "image/jpeg"
     if content_type not in ALLOWED_IMAGE_TYPES:
         raise HTTPException(status_code=400, detail="Only JPEG, PNG, GIF, or WebP images are allowed")
@@ -117,19 +115,12 @@ async def upload_profile_photo(
     ext = mimetypes.guess_extension(content_type) or ".jpg"
     if ext == ".jpe": ext = ".jpg"
     filename = f"avatars/{current_user.id}_{uuid.uuid4()}{ext}"
-    from supabase import create_client
-    client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
     try:
-        try:
-            existing = client.storage.list_buckets()
-            if not any(b["name"] == "avatars" for b in existing):
-                client.storage.create_bucket("avatars", options={"public": True})
-        except Exception:
-            pass
-        client.storage.from_("avatars").upload(filename, data, file_options={"content-type": content_type})
-        url = client.storage.from_("avatars").get_public_url(filename)
+        url = upload_file("avatars", filename, data, content_type)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Upload failed: {exc}")
+
     current_user.avatar_url = url
     current_user.updated_at = datetime.utcnow()
     db.commit(); db.refresh(current_user)

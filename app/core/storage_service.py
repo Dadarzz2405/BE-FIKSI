@@ -1,7 +1,7 @@
 # app/core/storage_service.py
 from functools import lru_cache
 from supabase import create_client, Client
-from app.core.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+from app.core.config import SUPABASE_URL, SERVICE_ROLE_KEY
 
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB
@@ -21,7 +21,9 @@ def get_storage_client() -> Client:
     This client bypasses RLS and is safe ONLY for server-side use.
     Never pass this client or its key to frontend code.
     """
-    return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    if not SERVICE_ROLE_KEY:
+        raise RuntimeError("SERVICE_ROLE_KEY is not set for privileged storage operations")
+    return create_client(SUPABASE_URL, SERVICE_ROLE_KEY)
 
 
 def ensure_bucket_exists(bucket_name: str, public: bool = True) -> None:

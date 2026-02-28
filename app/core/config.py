@@ -7,6 +7,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _first_non_empty(*keys: str, default: str = "") -> str:
+    """Return the first non-empty env var value from the provided keys."""
+    for key in keys:
+        value = os.getenv(key, "").strip()
+        if value:
+            return value
+    return default
+
 # ── Environment toggle ───────────────────────────────────────
 # Set APP_ENV=dev or APP_ENV=prod in .env (default: dev)
 APP_ENV = os.getenv("APP_ENV", "dev").lower()
@@ -25,9 +34,26 @@ DATABASE_URL = os.getenv(
     f"sqlite:///{BASE_DIR / 'fiksi.db'}",
 )
 
-SUPABASE_URL = os.getenv(f"{_prefix}_SUPABASE_URL", "")
-SUPABASE_ANON_KEY = os.getenv(f"{_prefix}_SUPABASE_ANON_KEY", "")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv(f"{_prefix}_SUPABASE_SERVICE_ROLE_KEY", "")
+SUPABASE_URL = _first_non_empty(
+    f"{_prefix}_SUPABASE_URL",
+    "SUPABASE_URL",
+)
+SUPABASE_ANON_KEY = _first_non_empty(
+    f"{_prefix}_SUPABASE_ANON_KEY",
+    f"{_prefix}_SUPABASE_KEY",
+    "SUPABASE_ANON_KEY",
+    "SUPABASE_KEY",
+    "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+)
+SERVICE_ROLE_KEY = _first_non_empty(
+    f"{_prefix}_SERVICE_ROLE_KEY",
+    "SERVICE_ROLE_KEY",
+    f"{_prefix}_SUPABASE_SERVICE_ROLE_KEY",
+    "SUPABASE_SERVICE_ROLE_KEY",
+)
+
+# Backward compatibility alias for existing imports
+SUPABASE_SERVICE_ROLE_KEY = SERVICE_ROLE_KEY
 
 # Legacy alias kept for backward compatibility
 SUPABASE_KEY = SUPABASE_ANON_KEY
@@ -42,9 +68,15 @@ PORT = int(os.getenv("PORT", "8000"))
 if not SUPABASE_URL:
     raise RuntimeError(f"{_prefix}_SUPABASE_URL is not set in .env")
 if not SUPABASE_ANON_KEY:
-    raise RuntimeError(f"{_prefix}_SUPABASE_ANON_KEY is not set in .env")
-if not SUPABASE_SERVICE_ROLE_KEY:
-    raise RuntimeError(f"{_prefix}_SUPABASE_SERVICE_ROLE_KEY is not set in .env")
+    raise RuntimeError(
+        f"{_prefix}_SUPABASE_ANON_KEY or {_prefix}_SUPABASE_KEY or NEXT_PUBLIC_SUPABASE_ANON_KEY is not set in .env"
+    )
+
+# Guard against leaking privileged keys into public env namespaces.
+if os.getenv("NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY"):
+    raise RuntimeError("NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY must never be set")
+if _is_prod and not SERVICE_ROLE_KEY:
+    print("⚠️  SERVICE_ROLE_KEY is not set; privileged Supabase operations are disabled.")
 
 # Print active environment at startup
 print(f"🌍 Running in {'⚠️  PRODUCTION' if _is_prod else '🛠️  DEV'} mode "

@@ -19,7 +19,7 @@ from app.db.session import SessionLocal, engine
 from app.models.user import User
 from app.models.post import Post
 from app.models.subject import Subject
-from app.core.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+from app.core.config import SUPABASE_URL, SERVICE_ROLE_KEY
 
 # Import Supabase client for storage operations
 from supabase import create_client
@@ -68,16 +68,16 @@ def upload_image_to_supabase(image_path: str, bucket_name: str = "post-images") 
     print(f"\n📤 Uploading image to Supabase Storage...")
     
     # Check if Supabase credentials are configured
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+    if not SUPABASE_URL or not SERVICE_ROLE_KEY:
         print("⚠️  Supabase credentials not found!")
-        print("Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in your environment variables.")
+        print("Set SUPABASE_URL and SERVICE_ROLE_KEY in your environment variables.")
         print("Using placeholder URL instead...")
         return "https://i.ibb.co.com/Kx9bs0zv/Garuda-Icon-Featuring-Networked-Wings-and-Typography-2.png"
     
     try:
         # Create Supabase client with SERVICE ROLE KEY for admin operations
         print("🔑 Using service role key for admin access...")
-        supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        supabase = create_client(SUPABASE_URL, SERVICE_ROLE_KEY)
         
         # Verify local image file exists
         if not os.path.exists(image_path):
@@ -185,9 +185,9 @@ def create_mock_users(db: Session) -> tuple[list[User], int]:
     supabase_admin = None
 
     # Try to initialize Supabase admin client for auth sync
-    if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
+    if SUPABASE_URL and SERVICE_ROLE_KEY:
         try:
-            supabase_admin = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+            supabase_admin = create_client(SUPABASE_URL, SERVICE_ROLE_KEY)
             print("🔑 Supabase Auth sync enabled for seeded users")
         except Exception as e:
             print(f"⚠️  Supabase Auth sync disabled: {e}")
@@ -347,7 +347,7 @@ def seed_database(image_path: str = "garuda_icon.png"):
         print(f"  Password: password123")
         if login_ready_count < len(users):
             print("  ⚠️  Some seeded users are not login-ready via Supabase Auth.")
-            print("     Set SUPABASE_SERVICE_ROLE_KEY to auto-provision auth users.")
+            print("     Set SERVICE_ROLE_KEY to auto-provision auth users.")
         print(f"\n🚀 Next Steps:")
         print(f"  1. Run: uvicorn app.main:app --reload")
         print(f"  2. Visit: http://localhost:8000/docs")

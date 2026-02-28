@@ -10,14 +10,19 @@ pip install -r requirements.txt
 
 ### 2. Configure Supabase credentials
 
-Set your Supabase project URL and API key:
+Use environment-specific variables (`DEV_`/`PROD_`) and keep key roles separate:
 
 ```bash
-export SUPABASE_URL="https://<project-ref>.supabase.co"
-export SUPABASE_KEY="<anon-or-service-role-key>"
+export APP_ENV="dev"  # or prod
+export DEV_SUPABASE_URL="https://<project-ref>.supabase.co"
+export DEV_SUPABASE_ANON_KEY="<publishable-or-anon-key>"
+export DEV_SUPABASE_SERVICE_ROLE_KEY="<service-role-key>" # server-only
 ```
 
-Optional: if `DATABASE_URL` points to Supabase Postgres, `SUPABASE_URL` is auto-derived.
+Notes:
+- `SERVICE_ROLE_KEY` (or `*_SUPABASE_SERVICE_ROLE_KEY`) is for backend/admin operations only.
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` is supported as anon-key input for frontend-safe usage.
+- Never expose service role keys in frontend/public environments.
 
 ### 3. Initialize DB client
 
@@ -31,4 +36,4 @@ python -m app.db.init_db
 uvicorn app.main:app --reload
 ```
 
-On startup, the app verifies Supabase client initialization via `init_db()`.
+On startup, the app validates Supabase URL + anon key. Privileged endpoints (storage/admin) require `SERVICE_ROLE_KEY`.
