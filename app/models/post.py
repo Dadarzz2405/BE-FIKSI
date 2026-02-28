@@ -26,9 +26,9 @@ class Post(Base):
         index=True,
     )
     # Category can be null (uncategorized posts allowed)
-    category_id = Column(
+    subject_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("categories.id", ondelete="SET NULL"),
+        ForeignKey("subjects.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -49,7 +49,7 @@ class Post(Base):
     # Post author
     author = relationship("User", back_populates="posts")
     # Category this post belongs to
-    category = relationship("Category", back_populates="posts")
+    subject = relationship("Subject", back_populates="posts")
     # Attached files (images, PDFs, etc.)
     assets = relationship("Asset", back_populates="post", cascade="all, delete-orphan")
     # Comments and answers on this post

@@ -9,7 +9,7 @@ import uvicorn
 # Import database engine and route modules
 from app.db.session import engine
 from app.api.routes import homepage, auth, profile
-from app.api.routes import posts, categories, comments, upvote
+from app.api.routes import posts, subjects, comments, upvote
 from app.api.routes import upload, leaderboard, quiz_submission
 from app.db.init_db import init_db
 
@@ -36,11 +36,14 @@ app = FastAPI(
     lifespan=lifespan,  # Register startup/shutdown handlers
 )
 
-# Add CORS middleware to allow requests from frontend clients
 app.add_middleware(
     CORSMiddleware,
-    # Allow both localhost development servers
-    allow_origins=["http://localhost:8080", "http://localhost:3000"],
+    # Allow local development servers
+    allow_origins=[
+        "http://localhost:8080", 
+        "http://localhost:3000",
+    ],
+    allow_origin_regex=r"https://.*\.vercel\.app", # Allow all Vercel domains (preview & prod)
     allow_credentials=True,
     allow_methods=["*"],  # Allow all HTTP methods
     allow_headers=["*"],  # Allow all headers
@@ -51,8 +54,8 @@ app.include_router(homepage.router,          prefix="/homepage",    tags=["Homep
 app.include_router(auth.router,              prefix="/auth",        tags=["Authentication"])
 app.include_router(profile.router,           prefix="/profile",     tags=["Profile"])
 app.include_router(posts.router,             prefix="/posts",       tags=["Posts"])
-app.include_router(upvote.router,                                    tags=["Upvotes"])
-app.include_router(categories.router,        prefix="/categories",  tags=["Categories"])
+app.include_router(subjects.router,          prefix="/subjects",    tags=["Subjects"])
+app.include_router(upvote.router,                                   tags=["Upvotes"])
 app.include_router(comments.router,                                 tags=["Comments"])
 app.include_router(upload.router,            prefix="/upload",      tags=["Upload"])
 app.include_router(leaderboard.router,       prefix="/leaderboard", tags=["Leaderboard"])

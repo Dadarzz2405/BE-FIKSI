@@ -22,7 +22,7 @@ class PostCreate(BaseModel):
     excerpt: Optional[str] = None
     image_url: Optional[str] = None
     is_published: bool = True
-    category_id: Optional[str] = None
+    subject_id: Optional[str] = None
 
 
 class PostUpdate(BaseModel):
@@ -31,7 +31,7 @@ class PostUpdate(BaseModel):
     excerpt: Optional[str] = None
     image_url: Optional[str] = None
     is_published: Optional[bool] = None
-    category_id: Optional[str] = None
+    subject_id: Optional[str] = None
 
 
 class RankInfo(BaseModel):
@@ -50,7 +50,7 @@ class AuthorInfo(BaseModel):
     rank: RankInfo = RankInfo(name="Bronze", icon="🥉", min_cp=0)
 
 
-class CategoryInfo(BaseModel):
+class SubjectInfo(BaseModel):
     id: str
     name: str
     slug: str
@@ -68,8 +68,8 @@ class PostResponse(BaseModel):
     updated_at: str
     author_id: str
     author: Optional[AuthorInfo] = None
-    category_id: Optional[str] = None
-    category: Optional[CategoryInfo] = None
+    subject_id: Optional[str] = None
+    subject: Optional[SubjectInfo] = None
 
     class Config:
         from_attributes = True
@@ -129,11 +129,11 @@ def _post_to_response(post: Post) -> PostResponse:
         updated_at=post.updated_at.isoformat(),
         author_id=str(post.author_id),
         author=_author_info(post.author) if post.author else None,
-        category_id=str(post.category_id) if post.category_id else None,
-        category=CategoryInfo(
-            id=str(post.category.id), name=post.category.name,
-            slug=post.category.slug, icon=post.category.icon,
-        ) if post.category else None,
+        subject_id=str(post.subject_id) if post.subject_id else None,
+        subject=SubjectInfo(
+            id=str(post.subject.id), name=post.subject.name,
+            slug=post.subject.slug, icon=post.subject.icon,
+        ) if post.subject else None,
     )
 
 
@@ -143,13 +143,13 @@ def _post_to_response(post: Post) -> PostResponse:
 def list_posts(
     page: int = Query(default=1, ge=1),
     limit: int = Query(default=10, ge=1, le=50),
-    category_id: Optional[str] = Query(default=None),
+    subject_id: Optional[str] = Query(default=None),
     db: Session = Depends(get_db),
 ):
     offset = (page - 1) * limit
     query  = db.query(Post).filter(Post.is_published == True)
-    if category_id:
-        query = query.filter(Post.category_id == category_id)
+    if subject_id:
+        query = query.filter(Post.subject_id == subject_id)
     total = query.count()
     posts = query.order_by(desc(Post.created_at)).offset(offset).limit(limit).all()
     return PostListResponse(posts=[_post_to_response(p) for p in posts],
@@ -194,7 +194,7 @@ def create_post(
         image_url=body.image_url,
         is_published=body.is_published,
         author_id=current_user.id,
-        category_id=_uuid.UUID(body.category_id) if body.category_id else None,
+        subject_id=_uuid.UUID(body.subject_id) if body.subject_id else None,
     )
     db.add(post)
     db.commit()
@@ -224,8 +224,8 @@ def update_post(
     if body.excerpt    is not None: post.excerpt     = body.excerpt
     if body.image_url  is not None: post.image_url   = body.image_url
     if body.is_published is not None: post.is_published = body.is_published
-    if body.category_id  is not None:
-        post.category_id = _uuid.UUID(body.category_id) if body.category_id else None
+    if body.subject_id  is not None:
+        post.subject_id = _uuid.UUID(body.subject_id) if body.subject_id else None
     post.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(post)

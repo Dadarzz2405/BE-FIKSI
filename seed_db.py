@@ -18,6 +18,7 @@ from typing import Optional
 from app.db.session import SessionLocal, engine
 from app.models.user import User
 from app.models.post import Post
+from app.models.subject import Subject
 from app.core.config import SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
 
 # Import Supabase client for storage operations
@@ -280,11 +281,17 @@ This post also includes the Garuda logo image to show how media is integrated in
         # Create posts with staggered timestamps (older first)
         created_at = datetime.utcnow() - timedelta(days=len(posts_data) - i, hours=i * 2)
         
+        # Get a subject for the post
+        subjects = db.query(Subject).all()
+        # Assure there is a subject before trying to assign it
+        subject_id = subjects[i % len(subjects)].id if subjects else None
+
         # Create post with uploaded image
         post = Post(
             **post_data,
             image_url=image_url,  # Use uploaded Garuda image
             author_id=author.id,
+            subject_id=subject_id, # Assign the post to a subject
             created_at=created_at,
             updated_at=created_at
         )

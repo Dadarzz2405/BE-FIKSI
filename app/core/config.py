@@ -2,37 +2,47 @@
 # Environment variable loading and application configuration
 
 import os
-# Utilities for file path handling
 from pathlib import Path
-# Load environment variables from .env file
 from dotenv import load_dotenv
+
 load_dotenv()
 
-# Get base directory for database file location
+# ── Environment toggle ───────────────────────────────────────
+# Set APP_ENV=dev or APP_ENV=prod in .env (default: dev)
+APP_ENV = os.getenv("APP_ENV", "dev").lower()
+
+if APP_ENV not in ("dev", "prod"):
+    raise RuntimeError(f"APP_ENV must be 'dev' or 'prod', got '{APP_ENV}'")
+
+_is_prod = APP_ENV == "prod"
+_prefix = "PROD" if _is_prod else "DEV"
+
+# ── Resolved config values ───────────────────────────────────
 BASE_DIR = Path(__file__).resolve().parent.parent
-# Database connection URL from environment or fallback to SQLite
-DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{BASE_DIR / 'fiksi.db'}")
 
-# Supabase API endpoint
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+DATABASE_URL = os.getenv(
+    f"{_prefix}_DATABASE_URL",
+    f"sqlite:///{BASE_DIR / 'fiksi.db'}",
+)
 
-# Anon key: public key for auth flows and RLS-respecting operations
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "")
+SUPABASE_URL = os.getenv(f"{_prefix}_SUPABASE_URL", "")
+SUPABASE_ANON_KEY = os.getenv(f"{_prefix}_SUPABASE_ANON_KEY", "")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv(f"{_prefix}_SUPABASE_SERVICE_ROLE_KEY", "")
 
-# Service role key: bypasses RLS, ONLY for server-side admin/storage operations
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
-
-# Legacy alias — kept so existing code that imports SUPABASE_KEY still works
-# Points to anon key intentionally; service role is accessed explicitly
+# Legacy alias kept for backward compatibility
 SUPABASE_KEY = SUPABASE_ANON_KEY
 
 # Frontend URL for CORS and redirects
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
-# Fail fast at startup rather than getting cryptic errors later
+# ── Startup validation ───────────────────────────────────────
 if not SUPABASE_URL:
-    raise RuntimeError("SUPABASE_URL environment variable is not set")
+    raise RuntimeError(f"{_prefix}_SUPABASE_URL is not set in .env")
 if not SUPABASE_ANON_KEY:
-    raise RuntimeError("SUPABASE_ANON_KEY environment variable is not set")
+    raise RuntimeError(f"{_prefix}_SUPABASE_ANON_KEY is not set in .env")
 if not SUPABASE_SERVICE_ROLE_KEY:
-    raise RuntimeError("SUPABASE_SERVICE_ROLE_KEY environment variable is not set")
+    raise RuntimeError(f"{_prefix}_SUPABASE_SERVICE_ROLE_KEY is not set in .env")
+
+# Print active environment at startup
+print(f"🌍 Running in {'⚠️  PRODUCTION' if _is_prod else '🛠️  DEV'} mode "
+      f"(APP_ENV={APP_ENV})")

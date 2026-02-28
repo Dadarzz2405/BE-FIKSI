@@ -33,3 +33,4 @@ class Subject(Base):
     academic_category = relationship("AcademicCategory", back_populates="subjects")
     ranks             = relationship("SubjectRank", back_populates="subject", cascade="all, delete-orphan")
     progress          = relationship("UserSubjectProgress", back_populates="subject", cascade="all, delete-orphan")
+    posts             = relationship("Post", back_populates="subject")

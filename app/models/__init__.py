@@ -1,5 +1,4 @@
 from app.models.user import User
-from app.models.category import Category
 from app.models.post import Post
 from app.models.comment import Comment
 from app.models.admin import Admin
@@ -16,7 +15,6 @@ __all__ = [
     "AcademicCategory",
     "Admin",
     "Asset",
-    "Category",
     "Comment",
     "Friendship",
     "FriendshipStatus",

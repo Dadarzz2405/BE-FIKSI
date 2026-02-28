@@ -6,7 +6,6 @@ from app.db.base import Base
 # Import ALL models so SQLAlchemy registers their metadata before create_all
 # Without these imports, tables won't be created
 from app.models.user import User          # noqa: F401
-from app.models.category import Category  # noqa: F401
 from app.models.post import Post          # noqa: F401
 from app.models.comment import Comment    # noqa: F401
 from app.models.upvote import Upvote      # noqa: F401
