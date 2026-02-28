@@ -6,3 +6,5 @@ psycopg2
 supabase
 python-dotenv
 pydantic[email]
+alembic
+python-multipart
