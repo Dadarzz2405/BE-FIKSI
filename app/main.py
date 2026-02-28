@@ -1,13 +1,14 @@
 # Context manager for app lifecycle management
 from contextlib import asynccontextmanager
-# FastAPI web framework imports
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 # ASGI server
 import uvicorn
 
 # Import database engine and route modules
-from app.db.session import engine
+from app.db.session import engine, get_db
 from app.api.routes import homepage, auth, profile
 from app.api.routes import posts, subjects, comments, upvote
 from app.api.routes import upload, leaderboard, quiz_submission
@@ -68,10 +69,27 @@ def root():
     return {"message": "Welcome to Nusa CoNEX API", "version": "2.0.0", "docs": "/docs"}
 
 
-# Health check endpoint - used by load balancers/monitoring
+# Health check endpoint - verifies DB connectivity and provides app info
 @app.get("/health")
-def health():
-    return {"status": "healthy"}
+def health(db: Session = Depends(get_db)):
+    from app.core.config import APP_ENV, PORT
+    
+    # Check database connectivity
+    db_status = "unhealthy"
+    try:
+        db.execute(text("SELECT 1"))
+        db_status = "healthy"
+    except Exception as e:
+        print(f"❌ Health check DB error: {e}")
+        db_status = f"unhealthy: {str(e)}"
+
+    return {
+        "status": "healthy" if db_status == "healthy" else "degraded",
+        "database": db_status,
+        "environment": APP_ENV,
+        "port": PORT,
+        "version": "2.1.0"
+    }
 
 
 # Entry point for running the server with auto-reload on code changes
