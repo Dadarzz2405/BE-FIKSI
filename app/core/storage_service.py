@@ -14,6 +14,13 @@ EXTENSION_MAP = {
 VALID_BUCKETS = {"post-images", "avatars"}
 
 
+def _bucket_name(bucket) -> str:
+    """Support supabase-py returning bucket dicts or typed objects."""
+    if isinstance(bucket, dict):
+        return str(bucket.get("name", ""))
+    return str(getattr(bucket, "name", ""))
+
+
 @lru_cache(maxsize=1)
 def get_storage_client() -> Client:
     """
@@ -35,7 +42,7 @@ def ensure_bucket_exists(bucket_name: str, public: bool = True) -> None:
     client = get_storage_client()
     try:
         existing = client.storage.list_buckets()
-        existing_names = {b["name"] for b in (existing or [])}
+        existing_names = {_bucket_name(b) for b in (existing or [])}
         if bucket_name not in existing_names:
             client.storage.create_bucket(bucket_name, options={"public": public})
     except Exception as e:

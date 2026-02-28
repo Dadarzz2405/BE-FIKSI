@@ -25,6 +25,13 @@ from app.core.config import SUPABASE_URL, SERVICE_ROLE_KEY
 from supabase import create_client
 
 
+def _bucket_name(bucket) -> str:
+    """Support supabase-py returning bucket dicts or typed objects."""
+    if isinstance(bucket, dict):
+        return str(bucket.get("name", ""))
+    return str(getattr(bucket, "name", ""))
+
+
 def _provision_supabase_auth_user(
     supabase_client,
     email: str,
@@ -94,7 +101,7 @@ def upload_image_to_supabase(image_path: str, bucket_name: str = "post-images") 
         # Check if bucket exists, create if necessary
         try:
             buckets = supabase.storage.list_buckets()
-            bucket_exists = any(b['name'] == bucket_name for b in buckets)
+            bucket_exists = any(_bucket_name(b) == bucket_name for b in (buckets or []))
             
             if not bucket_exists:
                 print(f"📦 Creating bucket '{bucket_name}'...")
