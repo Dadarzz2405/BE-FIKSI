@@ -69,7 +69,7 @@ app.include_router(quiz_submission.router,                          tags=["Quizz
 
 
 # Root endpoint - welcome message
-@app.get("/")
+@app.get("/", methods=["GET", "HEAD"])
 def root():
     return {"message": "Welcome to Nusa CoNEX API", "version": "2.0.0", "docs": "/docs"}
 
