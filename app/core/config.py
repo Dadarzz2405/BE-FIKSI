@@ -33,7 +33,7 @@ SUPABASE_SERVICE_ROLE_KEY = os.getenv(f"{_prefix}_SUPABASE_SERVICE_ROLE_KEY", ""
 SUPABASE_KEY = SUPABASE_ANON_KEY
 
 # Frontend URL for CORS and redirects
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://nusa-conex.vercel.app")
 
 # Port for the server (defaults to 8000, but sensitive to Render's $PORT)
 PORT = int(os.getenv("PORT", "8000"))
