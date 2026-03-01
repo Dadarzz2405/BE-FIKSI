@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import desc
 from typing import Optional, List
 from datetime import datetime
@@ -12,6 +12,10 @@ from app.core.auth_service import supabase_auth
 from app.core.gamification import award_points, get_rank
 
 router = APIRouter()
+POST_RELATIONSHIPS = (
+    joinedload(Post.author),
+    joinedload(Post.subject),
+)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────
@@ -151,7 +155,13 @@ def list_posts(
     if subject_id:
         query = query.filter(Post.subject_id == subject_id)
     total = query.count()
-    posts = query.order_by(desc(Post.created_at)).offset(offset).limit(limit).all()
+    posts = (
+        query.options(*POST_RELATIONSHIPS)
+        .order_by(desc(Post.created_at))
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
     return PostListResponse(posts=[_post_to_response(p) for p in posts],
                             total=total, page=page, limit=limit)
 
@@ -167,14 +177,25 @@ def list_my_posts(
     offset = (page - 1) * limit
     query  = db.query(Post).filter(Post.author_id == current_user.id)
     total  = query.count()
-    posts  = query.order_by(desc(Post.created_at)).offset(offset).limit(limit).all()
+    posts = (
+        query.options(*POST_RELATIONSHIPS)
+        .order_by(desc(Post.created_at))
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
     return PostListResponse(posts=[_post_to_response(p) for p in posts],
                             total=total, page=page, limit=limit)
 
 
 @router.get("/{post_id}", response_model=PostResponse)
 def get_post(post_id: str, db: Session = Depends(get_db)):
-    post = db.query(Post).filter(Post.id == post_id, Post.is_published == True).first()
+    post = (
+        db.query(Post)
+        .options(*POST_RELATIONSHIPS)
+        .filter(Post.id == post_id, Post.is_published == True)
+        .first()
+    )
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
     return _post_to_response(post)

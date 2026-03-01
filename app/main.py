@@ -68,7 +68,7 @@ app.include_router(comments.router,                                 tags=["Comme
 app.include_router(upload.router,            prefix="/upload",      tags=["Upload"])
 app.include_router(leaderboard.router,       prefix="/leaderboard", tags=["Leaderboard"])
 app.include_router(quiz_submission.router,                          tags=["Quizzes"])
-
+app.include_router(subjects.router,          prefix="/categories",  tags=["Categories"])
 
 # Root endpoint - welcome message
 @app.api_route("/", methods=["GET", "HEAD"])
