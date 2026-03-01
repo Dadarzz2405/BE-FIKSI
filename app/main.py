@@ -11,7 +11,7 @@ import uvicorn
 from app.db.session import engine, get_db
 from app.api.routes import homepage, auth, profile
 from app.api.routes import posts, subjects, comments, upvote
-from app.api.routes import upload, leaderboard, quiz_submission
+from app.api.routes import upload, leaderboard, quiz_submission, quizzes, settings
 from app.db.init_db import init_db
 from app.core.config import FRONTEND_URL, APP_ENV
 
@@ -67,6 +67,8 @@ app.include_router(upvote.router,                                   tags=["Upvot
 app.include_router(comments.router,                                 tags=["Comments"])
 app.include_router(upload.router,            prefix="/upload",      tags=["Upload"])
 app.include_router(leaderboard.router,       prefix="/leaderboard", tags=["Leaderboard"])
+app.include_router(quizzes.router,           prefix="/quizzes",     tags=["Quizzes"])
+app.include_router(settings.router,          prefix="/settings",    tags=["Settings"])
 app.include_router(quiz_submission.router,                          tags=["Quizzes"])
 app.include_router(subjects.router,          prefix="/categories",  tags=["Categories"])
 
